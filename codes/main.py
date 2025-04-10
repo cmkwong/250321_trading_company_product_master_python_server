@@ -1,8 +1,7 @@
 import sys
 import inspect
 
-sys.path.append("./reportProject")  # import the AtomLib path
-# from codes.ProjectHelper import ProjectHelper
+sys.path.append(".")
 from codes.CommandChecker import CommandChecker
 
 command = False

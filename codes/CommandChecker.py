@@ -4,15 +4,22 @@ import sys
 from functools import wraps
 import pandas as pd
 from codes import config
-from codes.utils import paramModel, timeModel
+from codes.utils import paramModel, timeModel, fileModel, inputModel
 from codes.utils.paramModel import command_check, params_check
-from codes.controllers.SystemController import SystemController
+from codes.controllers.PyputController import PyputController
+from codes.controllers.CapScreenController import CapScreenController
+from codes.controllers.AIToolsController import AIToolsController
+# from codes.controllers.ImageController import ImageController
 
 class CommandChecker:
 
     def __init__(self):
-        self.systemController = SystemController()
+        self.systemController = PyputController()
+        self.capScreenController = CapScreenController()
+        self.aiToolsController = AIToolsController()
+        # self.imageController = ImageController()
 
+        # constants
         self.COMMAND_CHECKED = 'CHECKED'
         self.COMMAND_NOT_CHECKED = 'NOT_CHECKED'
         self.ans = None  # being passed the command what user input
@@ -31,250 +38,83 @@ class CommandChecker:
     def quit(self):
         return self.QUIT
 
-    @command_check(['pos'])
-    def get_position(self):
-        self.systemController.capture_xy()
+    @command_check(['ct', 'capt'])
+    def capture_txt(self):
+        print("First coordinate. ")
+        firstCoord = self.systemController.get_click_pos()
+        print("Second coordinate. ")
+        secondCoord = self.systemController.get_click_pos()
+        # cap screen
+        filename = self.capScreenController.cap(firstCoord, secondCoord, path=config.IMAGE_TO_TEXT_PATH)
+        # transfer into txt
+        txt = self.aiToolsController.image_to_txt(filename)
+        fileModel.write_txt(config.IMAGE_TO_TEXT_PATH, 'transfer.txt', f"{txt}\n", 'a')
         return self.COMMAND_CHECKED
-    #
-    # # reading all SSME raw data needed
-    # @command_check()
-    # def data(self):
-    #     self.reportController.base_setUp()
-    #     print("report setup OK")
-    #     return self.COMMAND_CHECKED
-    #
-    # # renew item master (Plant)
-    # @command_check()
-    # def renewMachine(self):
-    #     self.reportController.nodeJsServerController.renewMachineData('master')
-    #
-    # # reading csv and upload into sql server
-    # @command_check()
-    # @params_check({
-    #     'year': ['2022', str],
-    #     'month': ['12', str],
-    #     'onlyPlants': [[], list]
-    # })
-    # def sql(self, **params):
-    #     self.reportController.processMonth2Server(**params)
-    #     return self.COMMAND_CHECKED
-    #
-    # # reading csv and upload into sql server (combined specific genset IDs -> plantno)
-    # @command_check()
-    # @params_check({
-    #     'year': ['2022', str],
-    #     'month': ['12', str],
-    #     'convertPlantnosByTo': [
-    #         {'by': ['genset935adaf145e64e0d98775ef13eaadf40',
-    #                 'genset0d291bd88f7f4d1d84da0882f4a4d369',
-    #                 'gensetfdfeaf5f2e504ecda779266f95c8d1e9'],
-    #          'to': 'YG1090'}, dict],
-    #     'onlyPlants': [[], list]
-    # })
-    # def sqls(self, **params):
-    #     self.reportController.processMonth2Server(**params)
-    #     return self.COMMAND_CHECKED
-    #
-    # # check csv data if healthy
-    # @command_check()
-    # @params_check({
-    #     'year': ['2022', str],
-    #     'month': ['12', str],
-    #     'checkCsv': [True, bool],
-    #     'onlyPlants': [[], list]
-    # })
-    # def checksql(self, **params):
-    #     self.reportController.processMonth2Server(**params)
-    #     return self.COMMAND_CHECKED
-    #
-    # # export Excel data from Web-supervisor then import into MySQL
-    # @command_check()
-    # @params_check({
-    #     "year": ['2023', str],
-    #     "month": ['11', str],
-    #     "filename": ["Graph-2024-03-07-08-47-02.xlsx", str],
-    #     "plantno": ["YG510", str],
-    #     "ssmename": ["Act power", str],
-    #     "ssmeunit": ["kW", str],
-    #     "ssmedecimalplaces": ['0', str],
-    # })
-    # def wsexcel(self, **params):
-    #     self.reportController.processExcel2Server(**params)
-    #
-    # # create table by NodeJS Server
-    # @command_check()
-    # @params_check({
-    #     'tableName': ['ssme202212', str],
-    # })
-    # def table(self, **params):
-    #     self.reportController.nodeJsServerController.createUnitValueTable(**params)
-    #     return self.COMMAND_CHECKED
-    #
-    # # reading sql and generating tex files
-    # @command_check()
-    # @params_check({
-    #     'report_start_str': ['2025-01-01 00:00:00', str],
-    #     'report_end_str': ['2025-01-31 23:59:59', str],
-    #     'request_plantnos': [[], list],
-    #     'interconnect': ['', bool],
-    #     'upload': ['', bool],
-    #     'monthly_kwh_needed': ['', bool],
-    #     'control_hard_code_co2_unit': ['', str]
-    # })
-    # def tex(self, **params):
-    #     # assign param
-    #     self.reportController.loopForEachPlant(**params)
-    #     self.reportController.tracker.write_records()  # write the record csv
-    #     # self.reportController.conn.close() # close the connection to sqlite
-    #     print("Loop plant report tex finished.")
-    #     return self.COMMAND_CHECKED
-    #
-    # # reading sql and generating tex files (with ignore period)
-    # @command_check()
-    # @params_check({
-    #     'report_start_str': ['2023-02-01 00:00:00', str],
-    #     'report_end_str': ['2023-02-28 23:59:59', str],
-    #     'request_plantnos': [[], list],
-    #     'interconnect': ['', bool],
-    #     'upload': ['', bool],
-    #     'monthly_kwh_needed': ['', bool],
-    #     'ignorePeriod': [{'from': '2023-03-05 00:00:00', 'to': '2023-03-13 16:00:00'}, dict]
-    # })
-    # def texi(self, **params):
-    #     # assign param
-    #     self.reportController.loopForEachPlant(**params)
-    #     self.reportController.tracker.write_records()  # write the record csv
-    #     print("Loop plant report tex finished.")
-    #     return self.COMMAND_CHECKED
-    #
-    # # write the pdf
-    # @command_check()
-    # @params_check({
-    #     'year': ['2022', str],
-    #     'month': ['1', str]
-    # })
-    # def write(self, **params):
-    #     self.reportController.writePdf(**params)
-    #     return self.COMMAND_CHECKED
-    #
-    # # making tex and writing PDF
-    # @command_check()
-    # @params_check({
-    #     'report_start_str': ['2023-02-01 00:00:00', str],
-    #     'report_end_str': ['2023-02-28 23:59:59', str],
-    #     'request_plantnos': [[], list],
-    #     'interconnect': ['', bool],
-    #     'upload': ['', bool],
-    #     'monthly_kwh_needed': ['', bool],
-    #     'year': ['2022', str],
-    #     'month': ['1', str],
-    # })
-    # def fw(self, **params):
-    #     # assign param
-    #     self.reportController.loopForEachPlant(**params)
-    #     # write the pdf
-    #     self.reportController.writePdf(**params)
-    #     return self.COMMAND_CHECKED
-    #
-    # # remove the temp files for SSME
-    # @command_check()
-    # @params_check({
-    #     'year': ['2022', str],
-    #     'month': ['4', str],
-    #     'request_plantno': [[], list]
-    # })
-    # def remove(self, **params):
-    #     self.reportController.removeRelated(**params)
-    #     return self.COMMAND_CHECKED
-    #
-    # # get the plant of output of electrical current
-    # @command_check()
-    # @params_check({
-    #     'plantnos': [['YG607', 'YG703'], list],
-    #     'period_start': ['2022-06-01 00:00:00', str],
-    #     'period_end': ['2023-07-31 23:59:59', str]
-    # })
-    # def plantA(self, **params):
-    #     # added the col will be fetched
-    #     config.colNameTable['float']['Gen curr L1'] = 'L1_A'
-    #     config.colNameTable['float']['Gen curr L2'] = 'L2_A'
-    #     config.colNameTable['float']['Gen curr L3'] = 'L3_A'
-    #
-    #     # looping into each of plant and period
-    #     for [start, end] in timeModel.split_month_period(params['period_start'], params['period_end']):
-    #         self.reportController.date_setup(start, end)
-    #         for plantno in params['plantnos']:
-    #             try:
-    #                 PlantData = self.reportController.getPlantData(plantno)
-    #                 L1_A = PlantData.rawData['L1_A'].resample("1T").mean().interpolate(method="linear",
-    #                                                                                    limit_direction="both")
-    #                 L2_A = PlantData.rawData['L2_A'].resample("1T").mean().interpolate(method="linear",
-    #                                                                                    limit_direction="both")
-    #                 L3_A = PlantData.rawData['L3_A'].resample("1T").mean().interpolate(method="linear",
-    #                                                                                    limit_direction="both")
-    #                 A_df = pd.concat([L1_A, L2_A, L3_A], axis=1)
-    #                 filename = f"{plantno}-electrical-current-{start.year}-{start.month}.xlsx"
-    #                 A_df.to_excel(os.path.join(config.tempPath, filename))
-    #                 print(f"Write {filename} successfully.")
-    #
-    #             except Exception as e:
-    #                 exc_type, exc_obj, tb = sys.exc_info()
-    #                 lineno = tb.tb_lineno
-    #                 msg = f"{plantno}:{e.__class__.__name__}:{lineno}:{exc_obj}"
-    #                 print(msg)
-    #     return self.COMMAND_CHECKED
-    #
-    # # getting running hours for available plants before provided date
-    # @command_check()
-    # @params_check({
-    #     "datetimefrom": ["2024-12-01 00:00:00", str],
-    #     "datetimeto": ["2024-12-30 23:59:59", str],
-    #     "output_path": ["../docs/runhr.xlsx", str]
-    # })
-    # def runHrs(self, **params):
-    #     # self.reportController.base_setUp()
-    #     plantnos = self.reportController.nodeJsServerController.getDistinctPlantno(params['datetimefrom'], params['datetimeto'])
-    #     df = self.reportController.nodeJsServerController.getPlantsRunHr(plantnos, params['datetimeto'])
-    #     df['last_updated'] = df['last_updated'].str[0:10].str.replace('-', '')
-    #     df.to_excel(params['output_path'])
-    #     return self.COMMAND_CHECKED
-    #
-    # # running hours for a plant
-    # @command_check()
-    # @params_check({
-    #     'plantno': ['YG703', str],
-    #     'start_str': ['2023-06-01 00:00:00', str],
-    #     'end_str': ['2023-07-31 23:59:59', str]
-    # })
-    # def runHrExcel(self, **params):
-    #     try:
-    #         self.reportController.date_setup(params['start_str'], params['end_str'])
-    #         # get data
-    #         PlantData = self.reportController.getPlantData(params['plantno'])
-    #         # drop the na data rows
-    #         df = PlantData.rawData['run_hours'].dropna()
-    #         # output the file
-    #         filename = f"{params['plantno']}_{params['start_str'].split(' ')[0]}_{params['end_str'].split(' ')[0]}_runhr.xlsx"
-    #         fullPath = os.path.join(config.tempPath, filename)
-    #         df.to_excel(fullPath)
-    #         print(f"Excel is written - {fullPath}.")
-    #     except Exception as e:
-    #         exc_type, exc_obj, tb = sys.exc_info()
-    #         lineno = tb.tb_lineno
-    #         msg = f"{params['plantno']}:{e.__class__.__name__}:{lineno}:{exc_obj}"
-    #         print(msg)
-    #     return self.COMMAND_CHECKED
-    #
-    # # ---------------------------------- AC statement split ----------------------------------
-    # @command_check()
-    # @params_check({
-    #     'folderName': ['20240815', str],
-    #     'domain': [0, int, "0=Company, 1=Salesman"],
-    #     'path': ["Z:/AC/Operator/Operation/AR/Customers Statements/", str]
-    # })
-    # def statement(self, **params):
-    #     # run statement query
-    #     self.statementSplitController.run(**params)
-    #     return self.COMMAND_CHECKED
-    # else:
-    #     return self.command_not_checked
+
+    @command_check(['tl'])
+    def translate_text_file(self):
+        txt = fileModel.read_text(config.IMAGE_TO_TEXT_PATH, 'transfer.txt')
+        translated_txt = self.aiToolsController.translate_content(txt, 'Chinese', "English", "Simple Professional")
+        fileModel.write_txt(config.IMAGE_TO_TEXT_PATH, "result.txt", f"{translated_txt}\n", 'a')
+        return self.COMMAND_CHECKED
+
+    @command_check(['tln'])
+    @params_check({
+        'content': ['', str],
+        'fromT': ['Chinese', str],
+        'toT': ['English', str],
+        'tone': ['Simple and Professional', str],
+    })
+    def translate_product_name(self, **params):
+        translated_txt = self.aiToolsController.translate_product_name(**params)
+        return self.COMMAND_CHECKED
+
+    @command_check(['t'])
+    def translate_user_text(self):
+        print("Input the translate txt: ")
+        txt = inputModel.txt_input()
+        translated_txt = self.aiToolsController.translate_content(txt, 'Chinese', "English", "Simple Professional")
+        return self.COMMAND_CHECKED
+
+    @command_check(['ctt', 'captt'])
+    def capture_txt_translate(self):
+        print("First coordinate. ")
+        firstCoord = self.systemController.get_click_pos()
+        print("Second coordinate. ")
+        secondCoord = self.systemController.get_click_pos()
+        # cap screen
+        filename = self.capScreenController.cap(firstCoord, secondCoord, path=config.IMAGE_TO_TEXT_PATH)
+        # transfer into txt
+        txt = self.aiToolsController.image_to_txt(filename)
+        translated_txt = self.aiToolsController.translate_content(txt, 'Chinese', "English", "Simple Professional")
+        fileModel.write_txt(config.IMAGE_TO_TEXT_PATH, "result.txt", f"{translated_txt}\n", 'a')
+        return self.COMMAND_CHECKED
+
+    @command_check(['pos'])
+    def get_pos(self):
+        coord = self.systemController.get_click_pos()
+        print(coord)
+        return self.COMMAND_CHECKED
+
+    @command_check(['kw'])
+    @params_check({
+        'content': ['', str]
+    })
+    def get_product_keyword(self, **params):
+        keywords = self.aiToolsController.generate_product_keywords(**params)
+        print(keywords)
+        return self.COMMAND_CHECKED
+
+    @command_check(['des'])
+    @params_check({
+        'content': ['', str],
+        'tone': ['business and professional', str]
+    })
+    def get_product_description(self, **params):
+        description = self.aiToolsController.generate_product_description(**params)
+        print(description)
+        return self.COMMAND_CHECKED
+
+    # @command_check(['ipt'])
+    # def remove_txt_from_image(self):
+    #     self.imageController.inpaint_text(r"C:\Users\Chris\Desktop\StockData\Business\Pet Product Images\202504060939\raw", "O1CN017idd0T1KebeHTG5tY_!!2206724201189-0-cib.jpg")

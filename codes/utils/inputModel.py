@@ -33,6 +33,15 @@ def num_input(outType=int):
         return None
     return usr_input
 
+def txt_input(outType=str):
+    try:
+        usr_input = input()
+        usr_input = outType(usr_input)
+    except KeyboardInterrupt:
+        print("Wrong input")
+        return None
+    return usr_input
+
 def user_confirm():
     placeholder = 'Input [y]es to confirm OR others to cancel: '
     confirm_input = input(placeholder)

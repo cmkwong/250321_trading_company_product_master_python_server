@@ -18,6 +18,7 @@ import pyperclip
 class AIToolsController:
 
     def __init__(self):
+        self.IMAGE_FOR_TXT_PATH = './docs/imageForTxt'
         # create the client for Deepseek
         self.client = OpenAI(api_key=config.DEEPSEEK_API_KEY, base_url="https://api.deepseek.com")
         # for image parse into text function
@@ -73,20 +74,28 @@ class AIToolsController:
 
     # translate the content
     def translate_content(self, content, fromT, toT, tone):
-        question = f"This is content '{content}'. Please translate this content from {fromT} to {toT} in tone {tone}"
+        question = f"This is content '{content}'. Please translate this content from {fromT} to {toT} in tone {tone}. When you see the \\n, it is represented new point. "
         response = self.get_simple_response(question)
-        return response.choices[0].message.content
+        translated_txt = response.choices[0].message.content
+        pyperclip.copy(translated_txt)
+        print(translated_txt)
+        return translated_txt
 
     # translate the product name
     def translate_product_name(self, content, fromT, toT, tone):
-        question = f"This is product name '{content}' in language {fromT}. Firstly, please translate into {toT}. Secondly, using this {toT} content to give product name with tone {tone}"
+        question = f"""
+        This is product name '{content}' in language {fromT}. Firstly, please translate into {toT}. Secondly, using this {toT} content to give product name with tone {tone}.
+        The translation should be capitalized for first charactor in each word.
+        """
         response = self.get_simple_response(question)
         product_name = response.choices[0].message.content.replace(',', '')
+        pyperclip.copy(product_name)
+        print(product_name)
         return product_name
 
     # generate the product keywords
     def generate_product_keywords(self, content):
-        question = f"This is product name '{content}'. Please give me this product propular and different key words based on popular SEO"
+        question = f"This is product name '{content}'. Please give me this product propular, distinct and different key words based on popular SEO"
         response = self.get_simple_response(question)
         keywords = ''
         for k in response.choices[0].message.content.split('\n')[2:-2]:
@@ -100,12 +109,15 @@ class AIToolsController:
     def generate_product_description(self, content, tone):
         question = f"This is product name: '{content}'. \nCould you please give us {tone} description. "
         response = self.get_simple_response(question)
-        return response.choices[0].message.content
+        description = response.choices[0].message.content.replace('**', '')
+        pyperclip.copy(description)
+        return description
 
     # transfer image into text
-    def image_to_txt(self, path, filename, lang='chi_sim'):
-        txt = pytesseract.image_to_string(os.path.join(path, filename), lang=lang).replace(' ', '')
+    def image_to_txt(self, filename, lang='chi_sim'):
+        txt = pytesseract.image_to_string(os.path.join(self.IMAGE_FOR_TXT_PATH, filename), lang=lang).replace('\n', '').replace(' ', '')
         pyperclip.copy(txt)
+        print(txt)
         return txt
 
 
