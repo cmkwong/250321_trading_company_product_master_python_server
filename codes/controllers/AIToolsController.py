@@ -59,6 +59,14 @@ class AIToolsController:
         response = self.get_simple_response(question)
         return response.choices[0].message.content
 
+    def write_email(self, points, toT):
+        points_txt = '\n'.join([f"{i+1}. {p}" for i, p in enumerate(points)])
+        question = f"Help me write an {toT} email and please notice on below points: \n{points_txt}"
+        response = self.get_simple_response(question)
+        email_txt = response.choices[0].message.content
+        pyperclip.copy(email_txt)
+        return email_txt
+
     # style the content
     def style_content(self, content, action="professional and simple"):
         question = f"This is content '{content}'. Please {action} this content"

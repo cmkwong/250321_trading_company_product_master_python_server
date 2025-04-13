@@ -115,6 +115,16 @@ class CommandChecker:
         print(description)
         return self.COMMAND_CHECKED
 
+    @command_check(['we'])
+    @params_check({
+        'points': [[], list],
+        'toT': ['English', str]
+    })
+    def write_email(self, **params):
+        email_txt = self.aiToolsController.write_email(**params)
+        fileModel.write_txt(config.IMAGE_TO_TEXT_PATH, "result.txt", f"----\n{email_txt}\n", 'a')
+        return self.COMMAND_CHECKED
+
     # @command_check(['ipt'])
     # def remove_txt_from_image(self):
     #     self.imageController.inpaint_text(r"C:\Users\Chris\Desktop\StockData\Business\Pet Product Images\202504060939\raw", "O1CN017idd0T1KebeHTG5tY_!!2206724201189-0-cib.jpg")
