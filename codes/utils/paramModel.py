@@ -11,13 +11,13 @@ def decodeParam(input_data, dataType):
     other:  1 -> '1'
     """
     if dataType == list:
-        required_input_data = input_data.split(' ')
+        required_input_data = input_data
         if len(input_data) == 0:
             required_input_data = []
     elif dataType == tuple:
-        required_input_data = eval(input_data)
+        required_input_data = input_data
     elif dataType == dict:
-        required_input_data = eval(input_data)
+        required_input_data = input_data
     elif dataType == bool:
         required_input_data = False
         if input_data.upper() == 'TRUE' or input_data:
@@ -48,12 +48,62 @@ def encodeParam(param):
         encoded_param = str(param)
     return encoded_param
 
+# ask tuple and list
+def _ask_batch(paramName, paramValue, dataType):
+    stop = False
+    init_count = 0
+    input_data = []
+    while not stop:
+        # setup default value
+        defaultValue = ''
+        if init_count < len(paramValue):
+            defaultValue = paramValue[init_count]
+        ind = prompt(f"{paramName}({dataType.__name__}) - {init_count + 1}:", default=f"{defaultValue}")
+        # check if input finished
+        if ind == r'\q':
+            stop = True
+        else:
+            input_data.append(ind)
+        init_count += 1
+    if dataType == list:
+        return input_data
+    elif dataType == tuple:
+        return tuple(input_data)
+
+# ask dict
+def _ask_dic(paramName, paramValue, dataType):
+    stop = False
+    init_count = 0
+    input_data = {}
+    dic_keys = list(paramValue.keys())
+    dic_values = list(paramValue.values())
+    while not stop:
+        # setup default value
+        defaultKey = ''
+        defaultValue = ''
+        if init_count < len(paramValue):
+            defaultKey = dic_keys[init_count]
+            defaultValue = dic_values[init_count]
+        ind_key = prompt(f"{paramName}({dataType.__name__}) - key: ", default=f"{defaultKey}")
+        if ind_key != r'\q':
+            ind_value = prompt(f"{paramName}({dataType.__name__}) - {ind_key} of value: ", default=f"{defaultValue}")
+            input_data[ind_key] = ind_value
+        else:
+            stop = True
+        init_count += 1
+    return input_data
+
 # user input the param
-def input_param(paramName, paramValue, dataTypeName, remark=''):
+def input_param(paramName, paramValue, dataType, remark=''):
     # ask use input parameter and allow user to modify the default parameter
     if remark:
         print(f"Remark: {remark}")
-    input_data = prompt(f"{paramName}({dataTypeName}): ", default=paramValue)
+    if dataType in [list, tuple]:
+        input_data = _ask_batch(paramName, paramValue, dataType)
+    elif dataType == dict:
+        input_data = _ask_dic(paramName, paramValue, dataType)
+    else:
+        input_data = prompt(f"{paramName}({dataType.__name__}): ", default=f"{paramValue}")
     # if no input, then assign default parameter
     if len(input_data) == 0:
         input_data = paramValue
@@ -97,14 +147,14 @@ def ask_param(paramFormat):
     for name, paramData in paramFormat.items():
         # getting the param data
         if len(paramData) == 3:
-            value, dataType, remark = paramData
+            param, dataType, remark = paramData
         else:
-            value, dataType = paramData
+            param, dataType = paramData
             remark = ''
         # encode the param (for user input)
-        encoded_param = encodeParam(value)
+        # param = encodeParam(param)
         # asking params
-        input_data = input_param(name, encoded_param, dataType.__name__, remark)
+        input_data = input_param(name, param, dataType, remark)
         # decode the param
         decode_data = decodeParam(input_data, dataType)
         params[name] = decode_data

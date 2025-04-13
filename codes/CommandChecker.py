@@ -117,12 +117,13 @@ class CommandChecker:
 
     @command_check(['we'])
     @params_check({
-        'points': [[], list],
+        'points': [{'1': 'test1', '2': 'test'}, dict],
         'toT': ['English', str]
     })
     def write_email(self, **params):
         email_txt = self.aiToolsController.write_email(**params)
         fileModel.write_txt(config.IMAGE_TO_TEXT_PATH, "result.txt", f"----\n{email_txt}\n", 'a')
+        print(email_txt)
         return self.COMMAND_CHECKED
 
     # @command_check(['ipt'])
