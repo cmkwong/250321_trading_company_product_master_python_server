@@ -9,7 +9,9 @@ from codes.utils.paramModel import command_check, params_check
 from codes.controllers.PyputController import PyputController
 from codes.controllers.CapScreenController import CapScreenController
 from codes.controllers.AIToolsController import AIToolsController
-# from codes.controllers.ImageController import ImageController
+from codes.controllers.FileController import FileController
+from codes.controllers.WebController import WebController
+from codes.controllers.ImageController import ImageController
 
 class CommandChecker:
 
@@ -17,7 +19,9 @@ class CommandChecker:
         self.systemController = PyputController()
         self.capScreenController = CapScreenController()
         self.aiToolsController = AIToolsController()
-        # self.imageController = ImageController()
+        self.fileController = FileController()
+        self.webController = WebController()
+        self.imageController = ImageController()
 
         # constants
         self.COMMAND_CHECKED = 'CHECKED'
@@ -38,6 +42,7 @@ class CommandChecker:
     def quit(self):
         return self.QUIT
 
+    # capture the text and paste it onto translate.txt
     @command_check(['ct', 'capt'])
     def capture_txt(self):
         print("First coordinate. ")
@@ -51,6 +56,7 @@ class CommandChecker:
         fileModel.write_txt(config.IMAGE_TO_TEXT_PATH, 'transfer.txt', f"{txt}\n", 'a')
         return self.COMMAND_CHECKED
 
+    # translate the text from translate.txt file
     @command_check(['tl'])
     def translate_text_file(self):
         txt = fileModel.read_text(config.IMAGE_TO_TEXT_PATH, 'transfer.txt')
@@ -58,6 +64,7 @@ class CommandChecker:
         fileModel.write_txt(config.IMAGE_TO_TEXT_PATH, "result.txt", f"{translated_txt}\n", 'a')
         return self.COMMAND_CHECKED
 
+    # translate the product name
     @command_check(['tln'])
     @params_check({
         'content': ['', str],
@@ -69,6 +76,7 @@ class CommandChecker:
         translated_txt = self.aiToolsController.translate_product_name(**params)
         return self.COMMAND_CHECKED
 
+    # simple translate
     @command_check(['t'])
     def translate_user_text(self):
         print("Input the translate txt: ")
@@ -76,6 +84,7 @@ class CommandChecker:
         translated_txt = self.aiToolsController.translate_content(txt, 'Chinese', "English", "Simple Professional")
         return self.COMMAND_CHECKED
 
+    # capture and translate the text
     @command_check(['ctt', 'captt'])
     def capture_txt_translate(self):
         print("First coordinate. ")
@@ -115,9 +124,10 @@ class CommandChecker:
         print(description)
         return self.COMMAND_CHECKED
 
+    # list out what you want in the email
     @command_check(['we'])
     @params_check({
-        'points': [{'1': 'test1', '2': 'test'}, dict],
+        'emailNote': [[], list],
         'toT': ['English', str]
     })
     def write_email(self, **params):
@@ -126,6 +136,36 @@ class CommandChecker:
         print(email_txt)
         return self.COMMAND_CHECKED
 
-    # @command_check(['ipt'])
-    # def remove_txt_from_image(self):
-    #     self.imageController.inpaint_text(r"C:\Users\Chris\Desktop\StockData\Business\Pet Product Images\202504060939\raw", "O1CN017idd0T1KebeHTG5tY_!!2206724201189-0-cib.jpg")
+    # create product folder
+    @command_check(['pf'])
+    @params_check({
+        'folderName': ['', str]
+    })
+    def create_product_folder(self, **params):
+        self.fileController.create_product_folder(**params)
+        return self.COMMAND_CHECKED
+
+    # download 1688 images and video
+    @command_check(['d1688'])
+    @params_check({
+        'website': ['', str],
+        'product_id': ['', str]
+    })
+    def download_1688_src(self, **params):
+        self.webController.download_1688_images(**params)
+        return self.COMMAND_CHECKED
+
+    @command_check(['re'])
+    def reopen_driver(self):
+        self.webController.init_driver()
+        return self.COMMAND_CHECKED
+
+    # extract image text from deepseek API
+    @command_check(['extracttext'])
+    @params_check({
+        'image_folder': [r'C:\Users\Chris\Desktop\StockData\Business\Pet Product Images\202504182049\display', str],
+        'image_name': [r'img_1.jpg', str]
+    })
+    def extract_texts(self, **params):
+        self.imageController.extract_text_with_deepseek(**params)
+        return self.COMMAND_CHECKED

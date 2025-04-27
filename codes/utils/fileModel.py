@@ -1,6 +1,8 @@
 import pandas as pd
 import os
 from codes.utils import listModel
+from urllib.parse import urlparse
+from pathlib import Path
 
 def getFileList(pathDir, reverse=False):
     required_fileNames = []
@@ -22,16 +24,42 @@ def clearFiles(pathDir, pattern=None):
         os.remove(os.path.join(pathDir, file))
         print("The file {} has been removed.".format(file))
 
+
 def createDir(main_path, dir_name, readme=None):
     """
-    Create directory with readme.txt
+    Creates a directory if it doesn't exist, and optionally adds a readme.txt file.
+
+    Parameters:
+        main_path (str): The parent directory path
+        dir_name (str): The name of the directory to create
+        readme (bool/str): If True, creates empty readme.txt. If string, uses as content.
+
+    Returns:
+        str: Full path of the created directory
     """
-    path = os.path.join(main_path, dir_name)
-    if not os.path.isfile(path):
-        os.mkdir(path)
-    if readme:
-        with open(os.path.join(path, 'readme.txt'), 'a') as f:
-            f.write(readme)
+    # Create the full directory path
+    full_path = os.path.join(main_path, dir_name)
+
+    try:
+        # Create directory (exist_ok prevents error if directory exists)
+        os.makedirs(full_path, exist_ok=True)
+        print(f"Directory '{full_path}' created or already exists")
+
+        # Create readme file if requested
+        if readme:
+            readme_path = os.path.join(full_path, "readme.txt")
+            with open(readme_path, 'w') as f:
+                if isinstance(readme, str):
+                    f.write(readme)
+                else:
+                    f.write("")  # Empty file
+            print(f"Created readme.txt in '{full_path}'")
+
+        return full_path
+
+    except Exception as e:
+        print(f"Error creating directory: {e}")
+        return None
 
 # reading txt
 def read_text(main_path, file_name):
@@ -71,3 +99,7 @@ def writeAllTxtFiles(main_path, texts, method='w'):
     for filename, txt in texts.items():
         if filename[0] != '_':
             write_txt(main_path, filename, txt, method)
+
+def getFileExt(fileName):
+    file_ext = Path(urlparse(fileName).path).suffix
+    return file_ext

@@ -59,8 +59,8 @@ class AIToolsController:
         response = self.get_simple_response(question)
         return response.choices[0].message.content
 
-    def write_email(self, points, toT):
-        points_txt = '\n'.join([f"{i+1}. {p}" for i, p in enumerate(points)])
+    def write_email(self, emailNote, toT):
+        points_txt = '\n'.join([f"{i+1}. {p}" for i, p in enumerate(emailNote)])
         question = f"Help me write an {toT} email and please notice on below points: \n{points_txt}"
         response = self.get_simple_response(question)
         email_txt = response.choices[0].message.content
