@@ -8,9 +8,10 @@ from selenium.webdriver import  ActionChains
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 
-import wget
+import matplotlib.pyplot as plt
 import requests
 from urllib.parse import urlparse
+from PIL import Image
 
 from codes import config
 from codes.utils import fileModel
@@ -23,29 +24,55 @@ class WebController:
         self.driver = None
         self.is_quit = True
 
+    def get_image_size(self, image_path):
+        img = plt.imread(image_path)
+        height, width = img.shape[:2]
+        return width, height
+
     def download_image(self, url, save_path=None):
+        temp_path = None
         try:
             # Send GET request
             response = requests.get(url, stream=True)
-            response.raise_for_status()  # Raise error for bad status codes
+            response.raise_for_status()
 
             # Determine filename and path
             if not save_path:
-                filename = url.split('/')[-1]  # Extract filename from URL
+                filename = url.split('/')[-1]
                 save_path = os.path.join(os.getcwd(), filename)
             else:
                 os.makedirs(os.path.dirname(save_path), exist_ok=True)
 
-            # Save the image
-            with open(save_path, 'wb') as f:
+            # Create temp path for initial download
+            base, ext = os.path.splitext(save_path)
+            temp_path = f"{base}_temp{ext}"
+
+            # Save the image to temp location
+            with open(temp_path, 'wb') as f:
                 for chunk in response.iter_content(1024):
                     f.write(chunk)
 
-            print(f"Image successfully saved to {save_path}")
-            return save_path
+            # Get dimensions - using separate with block to ensure file is closed
+            with Image.open(temp_path) as img:
+                width, height = img.size
+
+            # Close the image explicitly (extra precaution)
+            img.close()
+
+            # Construct new filename with dimensions
+            new_path = f"{base}_{width}x{height}{ext}"
+
+            # Rename temp file to final path
+            os.replace(temp_path, new_path)
+
+            print(f"Image successfully saved to {new_path}")
+            return new_path
 
         except Exception as e:
             print(f"Error downloading image: {e}")
+            # Clean up temp file if it exists
+            if temp_path and os.path.exists(temp_path):
+                os.remove(temp_path)
             return None
 
     def download_video(self, url, save_path=None):
@@ -125,13 +152,15 @@ class WebController:
                     # getting extension
                     video_url = self.driver.find_element(By.CSS_SELECTOR, '.lib-video.vjs-has-started').find_element(By.TAG_NAME, 'video').get_attribute('src')
                     ext = fileModel.getFileExt(video_url)
-                    filename = f"video_{product_id}_{counts['video']}{ext}"
+                    count_str = f"{counts['video']}".zfill(2)
+                    filename = f"video_{product_id}_{count_str}{ext}"
                     self.download_video(video_url, os.path.join(config.PRODUCT_FOLDER_PATH, product_id, 'video', filename))
                     counts['video'] += 1
                 else:
                     image_url = is_image[0].get_attribute('src')
                     ext = fileModel.getFileExt(image_url)
-                    filename = f"img_{product_id}_{counts['display']}{ext}"
+                    count_str = f"{counts['display']}".zfill(2)
+                    filename = f"img_{product_id}_{count_str}{ext}"
                     self.download_image(image_url, os.path.join(config.PRODUCT_FOLDER_PATH, product_id, 'display', filename))
                     counts['display'] += 1
                 time.sleep(0.5)
@@ -148,7 +177,8 @@ class WebController:
             for i, element in enumerate(elements):
                 des_img_url = element.get_attribute('src')
                 ext = fileModel.getFileExt(des_img_url)
-                filename = f"des_{product_id}_{i+1}{ext}"
+                count_str = f"{i+1}".zfill(2)
+                filename = f"des_{product_id}_{count_str}{ext}"
                 self.download_image(des_img_url,  os.path.join(config.PRODUCT_FOLDER_PATH, product_id, 'description', filename))
         finally:
             self.driver.quit()

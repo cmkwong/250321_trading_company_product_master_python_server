@@ -12,16 +12,18 @@ from codes.controllers.AIToolsController import AIToolsController
 from codes.controllers.FileController import FileController
 from codes.controllers.WebController import WebController
 from codes.controllers.ImageController import ImageController
+from codes.controllers.PyautoController import PyautoController
 
 class CommandChecker:
 
     def __init__(self):
-        self.systemController = PyputController()
+        self.pyputController = PyputController()
         self.capScreenController = CapScreenController()
         self.aiToolsController = AIToolsController()
         self.fileController = FileController()
         self.webController = WebController()
         self.imageController = ImageController()
+        self.pyautoController = PyautoController()
 
         # constants
         self.COMMAND_CHECKED = 'CHECKED'
@@ -46,9 +48,9 @@ class CommandChecker:
     @command_check(['ct', 'capt'])
     def capture_txt(self):
         print("First coordinate. ")
-        firstCoord = self.systemController.get_click_pos()
+        firstCoord = self.pyputController.get_pos_by_leftClick()
         print("Second coordinate. ")
-        secondCoord = self.systemController.get_click_pos()
+        secondCoord = self.pyputController.get_pos_by_leftClick()
         # cap screen
         filename = self.capScreenController.cap(firstCoord, secondCoord, path=config.IMAGE_TO_TEXT_PATH)
         # transfer into txt
@@ -88,9 +90,9 @@ class CommandChecker:
     @command_check(['ctt', 'captt'])
     def capture_txt_translate(self):
         print("First coordinate. ")
-        firstCoord = self.systemController.get_click_pos()
+        firstCoord = self.pyputController.get_pos_by_leftClick()
         print("Second coordinate. ")
-        secondCoord = self.systemController.get_click_pos()
+        secondCoord = self.pyputController.get_pos_by_leftClick()
         # cap screen
         filename = self.capScreenController.cap(firstCoord, secondCoord, path=config.IMAGE_TO_TEXT_PATH)
         # transfer into txt
@@ -101,7 +103,7 @@ class CommandChecker:
 
     @command_check(['pos'])
     def get_pos(self):
-        coord = self.systemController.get_click_pos()
+        coord = self.pyputController.get_pos_by_leftClick()
         print(coord)
         return self.COMMAND_CHECKED
 
@@ -161,11 +163,35 @@ class CommandChecker:
         return self.COMMAND_CHECKED
 
     # extract image text from deepseek API
-    @command_check(['extracttext'])
+    @command_check(['tf'])
     @params_check({
-        'image_folder': [r'C:\Users\Chris\Desktop\StockData\Business\Pet Product Images\202504182049\display', str],
-        'image_name': [r'img_1.jpg', str]
+        'product_index': [r'', str]
     })
     def extract_texts(self, **params):
-        self.imageController.extract_text_with_deepseek(**params)
+        # read display folder
+        self.imageController.write_extracted_txt(params['product_index'], 'display')
+        # read description folder
+        self.imageController.write_extracted_txt(params['product_index'], 'description')
         return self.COMMAND_CHECKED
+
+    @command_check()
+    @params_check({
+        "product_index": ['202504302350', str],
+        "imagesType": ['display', str]
+    })
+    def buildcanva(self, **params):
+        self.pyautoController.product_into_canva(params['product_index'], params['imagesType'])
+        return self.COMMAND_CHECKED
+
+    @command_check()
+    def bbox(self):
+        self.pyautoController.get_bbox_from_clicks()
+        return self.COMMAND_CHECKED
+
+    @command_check()
+    def zip2agent(self):
+        product_ids = [os.path.join(config.PRODUCT_FOLDER_PATH, t.strip()) for t in fileModel.read_text(r'./docs', 'zip_to_agent_product_id.txt').split('\n') if len(t.strip()) > 0]
+        fileModel.zip_folders_combined(product_ids, os.path.join(config.PRODUCT_FOLDER_PATH, f"PetProductImages_{timeModel.get_time_str('%Y%m%d')}.zip"))
+        return self.COMMAND_CHECKED
+
+

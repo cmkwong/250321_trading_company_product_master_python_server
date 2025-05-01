@@ -1,17 +1,58 @@
-import pandas as pd
 import os
 from codes.utils import listModel
 from urllib.parse import urlparse
 from pathlib import Path
+import zipfile
 
-def getFileList(pathDir, reverse=False):
-    required_fileNames = []
-    listFiles = os.listdir(pathDir)
-    for fileName in listFiles:
-        if fileName[0] != '~': # discard the temp file
-            required_fileNames.append(fileName)
-    required_fileNames = sorted(required_fileNames, reverse=reverse)
-    return required_fileNames
+
+def getFileList(pathDir, reverse=False, filter_temp=True, extensions=None):
+    """
+    Get a sorted list of files in a directory with various filtering options.
+
+    Args:
+        pathDir (str): Path to the directory
+        reverse (bool): Sort in reverse order
+        filter_temp (bool): Whether to filter temporary files (starting with '~' or '.')
+        extensions (list): Optional list of allowed file extensions (e.g., ['.txt', '.jpg'])
+
+    Returns:
+        list: Sorted list of filenames
+    """
+    try:
+        # Get all entries in directory
+        entries = os.listdir(pathDir)
+
+        # Filter files
+        filtered_files = []
+        for entry in entries:
+            # Skip if it's a directory
+            if not os.path.isfile(os.path.join(pathDir, entry)):
+                continue
+
+            # Filter temporary files if enabled
+            if filter_temp and (entry.startswith('~') or entry.startswith('.')):
+                continue
+
+            # Filter by extension if specified
+            if extensions:
+                ext = os.path.splitext(entry)[1].lower()
+                if ext not in extensions:
+                    continue
+
+            filtered_files.append(entry)
+
+        # Sort files (case-insensitive)
+        return sorted(filtered_files, key=str.lower, reverse=reverse)
+
+    except FileNotFoundError:
+        print(f"Directory not found: {pathDir}")
+        return []
+    except PermissionError:
+        print(f"Permission denied for directory: {pathDir}")
+        return []
+    except Exception as e:
+        print(f"Error reading directory {pathDir}: {str(e)}")
+        return []
 
 def clearFiles(pathDir, pattern=None):
     """
@@ -103,3 +144,36 @@ def writeAllTxtFiles(main_path, texts, method='w'):
 def getFileExt(fileName):
     file_ext = Path(urlparse(fileName).path).suffix
     return file_ext
+
+def zip_folders_combined(folder_paths, output_path):
+    """
+    Combines multiple folders into a single zip file.
+
+    Args:
+        folder_paths (list): List of paths to folders to be zipped
+        output_path (str): Path for the output zip file (including .zip extension)
+
+    Returns:
+        str: Path to created zip file
+
+    Example:
+        zip_folders_combined(['/path/folder1', '/path/folder2'], '/output/combined.zip')
+    """
+    output_path = Path(output_path).resolve()
+
+    with zipfile.ZipFile(output_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
+        for folder_path in folder_paths:
+            folder = Path(folder_path).resolve()
+
+            # Walk through each file in the folder
+            for root, dirs, files in os.walk(folder):
+                for file in files:
+                    file_path = Path(root) / file
+
+                    # Create relative path for zip file
+                    rel_path = file_path.relative_to(folder.parent)
+
+                    # Add file to zip
+                    zipf.write(file_path, rel_path)
+    print(f"{len(folder_paths)} files is stored into {output_path}")
+    return str(output_path)

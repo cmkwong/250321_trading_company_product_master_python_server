@@ -1,35 +1,53 @@
 import io
 import os
-os.environ['GOOGLE_APPLICATION_CREDENTIALS'] = r'C:\Users\Chris\Downloads\client_secret_128094836202-05e0ot4g06e039cb5n3qfj999tvtefmk.apps.googleusercontent.com.json'
 
 import torch
 import requests
 import base64
-
-from google.cloud import vision
-
+from pathlib import Path
 from codes import config
+from codes.utils import fileModel
+from codes.controllers.AIToolsController import AIToolsController
+
 class ImageController:
     def __init__(self):
-        self.API_URL = "https://api.deepseek.com/v1/ocr"
+        # self.API_URL = "https://api.deepseek.com/v1/ocr"
+        self.API_URL = r"https://www.imagetotext.info/api/imageToText"
+        self.aiToolsController = AIToolsController()
 
-    def extract_text_with_deepseek(self, image_folder, image_name):
-        with open(os.path.join(image_folder, image_name), 'rb') as image_file:
-            image_data = image_file.read()
+    def image_to_base64(self, image_folder, image_name):
+        """
+        Helper method to convert an image file to base64 encoded string with data URI
+
+        Args:
+            image_path (str): Path to the image file
+
+        Returns:
+            str: Base64 encoded image with data URI prefix
+        """
+        image_path = os.path.join(image_folder, image_name)
+        with open(image_path, 'rb') as image_file:
+            encoded_string = base64.b64encode(image_file.read()).decode('utf-8')
+            extension = Path(image_path).suffix[1:]  # Get file extension without dot
+            return f"data:image/{extension};base64,{encoded_string}"
+
+    def extract_text_with_image2text(self, image_folder, image_name):
 
         # Encode image in base64
-        encoded_image = base64.b64encode(image_data).decode('utf-8')
+        # encoded_image = base64.b64encode(image_data).decode('utf-8')
+        encoded_image = self.image_to_base64(image_folder, image_name)
 
         # Prepare headers and payload
         headers = {
-            "Authorization": f"Bearer {config.DEEPSEEK_API_KEY}",
+            "Authorization": f"Bearer {config.IMAGETOTEXT_API_KEY}",
             "Content-Type": "application/json"
         }
 
         payload = {
-            "image": encoded_image,
-            "language": "zh",  # Chinese for your example image
-            "detail": True  # Set True if you need position data
+            "base64": encoded_image,
+            # "image_url": os.path.join(image_folder, image_name)
+            # "language": "zh",  # Chinese for your example image
+            # "detail": True  # Set True if you need position data
         }
 
         try:
@@ -39,51 +57,23 @@ class ImageController:
 
             # Parse response
             result = response.json()
-            return result.get('text', 'No text found')
+            txt = result.get('result', 'No text found')
+            txt = txt.replace('<br />', '').replace('\n\n', '\n')
+            return txt
 
         except requests.exceptions.RequestException as e:
             return f"API Error: {str(e)}"
         except Exception as e:
             return f"Error: {str(e)}"
 
-    def extract_text_from_image(self, folderName, fileName):
-        """
-        Extracts text from an image using Google Cloud Vision API.
-
-        Args:
-            image_path (str): Path to the image file or URL
-
-        Returns:
-            str: Extracted text from the image
-        """
-        # Initialize the client
-        client = vision.ImageAnnotatorClient()
-        image_path = os.path.join(folderName, fileName)
-
-        # Check if image_path is a URL or local file
-        # if image_path.startswith(('http:', 'https:')):
-        #     # Image from web
-        #     image = vision.Image()
-        #     image.source.image_uri = image_path
-        # else:
-        # Local image file
-        with io.open(image_path, 'rb') as image_file:
-            content = image_file.read()
-        image = vision.Image(content=content)
-
-        try:
-            # Perform text detection
-            response = client.text_detection(image=image)
-            texts = response.text_annotations
-
-            if texts:
-                # The first annotation contains the entire detected text
-                return texts[0].description
-            else:
-                return "No text found in the image."
-
-        except Exception as e:
-            return f"Error occurred: {str(e)}"
-
-# imageController = ImageController()
-# imageController.extract_text_from_image(r"C:\Users\Chris\Desktop\StockData\Business\Pet Product Images\202504172234\display", "img_2.jpg")
+    def write_extracted_txt(self, product_index, sub_prj_folder='display'):
+        folder = os.path.join(config.PRODUCT_FOLDER_PATH, product_index, sub_prj_folder)
+        images = fileModel.getFileList(folder)
+        txt = ''
+        for img in images:
+            extracted_txt = self.extract_text_with_image2text(folder, img)
+            extracted_txt = f"---- {img} ----\n{extracted_txt}\n"
+            txt += extracted_txt
+        fileModel.write_txt(folder, f'{sub_prj_folder}_{product_index}.txt', txt, 'w')
+        translated_txt = self.aiToolsController.translate_content(txt, 'Chinese', "English", "Simple Professional")
+        fileModel.write_txt(folder, f'{sub_prj_folder}_{product_index}_translated.txt', f"{translated_txt}\n", 'w')

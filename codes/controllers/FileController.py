@@ -13,5 +13,7 @@ class FileController:
         fileModel.createDir(productPath, 'display')
         fileModel.createDir(productPath, 'description')
         fileModel.createDir(productPath, 'video')
+        fileModel.createDir(productPath, 'edited/display')
+        fileModel.createDir(productPath, 'edited/description')
         pyperclip.copy(productPath)
         return True

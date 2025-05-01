@@ -2,6 +2,10 @@ from datetime import datetime
 from dateutil.relativedelta import relativedelta
 import pytz
 
+def get_time_str(format='%Y%m%d%H%M%S'):
+    now = datetime.now()
+    return now.strftime(format)
+
 # split into month between start and end datetime
 def split_month_period(start, end, format="%Y-%m-%d %H:%M:%S"):
     """
