@@ -174,13 +174,23 @@ class CommandChecker:
         self.imageController.write_extracted_txt(params['product_index'], 'description')
         return self.COMMAND_CHECKED
 
-    @command_check()
+    @command_check(['bc'])
     @params_check({
-        "product_index": ['202504302350', str],
-        "imagesType": ['display', str]
+        "product_index": ['', str],
+        "imagesType": ['', str]
     })
     def buildcanva(self, **params):
-        self.pyautoController.product_into_canva(params['product_index'], params['imagesType'])
+        self.pyautoController.product_into_canva_attempts(params['product_index'], params['imagesType'])
+        return self.COMMAND_CHECKED
+
+    @command_check(['bcs'])
+    @params_check({
+        "product_indexs": ['', list]
+    })
+    def buildcanvas(self, **params):
+        for product_index in params['product_indexs']:
+            self.pyautoController.product_into_canva_attempts(product_index, 'display')
+            self.pyautoController.product_into_canva_attempts(product_index, 'description')
         return self.COMMAND_CHECKED
 
     @command_check()

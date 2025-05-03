@@ -53,6 +53,7 @@ def _ask_batch(paramName, paramValue, dataType):
     stop = False
     init_count = 0
     input_data = []
+    print("Type \q to finish. ")
     while not stop:
         # setup default value
         defaultValue = ''

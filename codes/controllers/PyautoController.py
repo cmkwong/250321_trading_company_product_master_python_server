@@ -1,4 +1,5 @@
 import pyautogui
+import pyperclip
 import time
 import os
 from datetime import datetime, timedelta
@@ -89,7 +90,7 @@ class PyautoController:
         try:
             # Copy image to clipboard
             imgModel.copy_image_to_clipboard(image_path)
-            time.sleep(0.2)  # Small delay for clipboard operation
+            time.sleep(0.5)  # Small delay for clipboard operation
 
             # Move to target position and paste
             pyautogui.moveTo(x, y)
@@ -99,7 +100,7 @@ class PyautoController:
             # Wait for paste to complete
             time.sleep(paste_delay)
 
-            print(f"Image pasted at position ({x}, {y})")
+            print(f"Image: {image_path} pasted at position ({x}, {y})")
             return True
 
         except Exception as e:
@@ -251,10 +252,129 @@ class PyautoController:
                                    click=click
                                    )
 
+    def _open_canva(self):
+        # open the canva
+        self.findPattern_and_click([os.path.join(self.CONVA_ICON_PATH, 'canva_icon.png'),
+                                    os.path.join(self.CONVA_ICON_PATH, 'canva_icon_2.png')], grayscale=False, region=(908, 955, 479, 124))
+        return True
+
+    def _init_canva_design(self, width, height):
+        """
+        init a design based on init image dimension
+        """
+        self._open_canva()
+        self.find_canva_home_icon_and_click()
+        self.findPattern_and_click([os.path.join(self.CONVA_ICON_PATH, 'canva_create.png')])
+        self.findPattern_and_click([os.path.join(self.CONVA_ICON_PATH, 'custom_size_1.png')])
+        self.findPattern_and_click([os.path.join(self.CONVA_ICON_PATH, 'width_1.png')], offset_y=30)
+        self.input_text(text=width, clear_first=True)
+        self.findPattern_and_click([os.path.join(self.CONVA_ICON_PATH, 'height_1.png')], offset_y=30)
+        self.input_text(text=height, clear_first=True)
+        self.findPattern_and_click([os.path.join(self.CONVA_ICON_PATH, 'canva_create_design.png')], offset_y=15)
+        return True
+
+    def _create_custom_size_page(self, width, height):
+        """
+        create custom size of page in a design
+        """
+        self.findPattern_and_click([os.path.join(self.CONVA_ICON_PATH, 'create_page.png')], offset_x=10)
+        self.findPattern_and_click([os.path.join(self.CONVA_ICON_PATH, 'more.png')])
+        self.findPattern_and_click([os.path.join(self.CONVA_ICON_PATH, 'custom_size_2.png')])
+        self.findPattern_and_click([os.path.join(self.CONVA_ICON_PATH, 'width_1.png')], offset_y=40)
+        self.input_text(text=width, clear_first=True)
+        pyautogui.press('tab')
+        self.input_text(text=height, clear_first=True)
+        pyautogui.press(['tab', 'tab', 'tab'])
+        pyautogui.press('enter')
+        time.sleep(0.2)
+        if not self.findPattern_and_click([os.path.join(self.CONVA_ICON_PATH, 'canva_warning_20_types.png')], click=False, timeout=1) == (False, False):
+            return False
+        return True
+
+    def _set_images_as_background(self, image_infos):
+        """
+        right click to set image into background
+        """
+        # scroll back to the first image
+        x, y = self.find_canva_home_icon_and_click(offset_x=172, offset_y=970)
+        for _ in range(len(image_infos) + 5):
+            pyautogui.press('left')
+        # set as background image
+        for key, image_info in image_infos.items():
+            # for background image setup
+            x, y = self.find_canva_home_icon_and_click(offset_x=943, offset_y=600)
+            pyautogui.rightClick(x, y)
+            self.findPattern_and_click([os.path.join(self.CONVA_ICON_PATH, 'set_image_as_background.png')])
+            x, y = self.find_canva_home_icon_and_click(offset_x=943, offset_y=600)
+            # # for rename the image
+            # pyautogui.rightClick(x, y)
+            # self.findPattern_and_click([os.path.join(self.CONVA_ICON_PATH, 'canva_info.png')])
+            # self.findPattern_and_click([os.path.join(self.CONVA_ICON_PATH, 'edit.png')])
+            # self.input_text(text=image_info['name'], clear_first=True)
+            # for next page
+            time.sleep(0.1)
+            x, y = self.find_canva_home_icon_and_click(offset_x=172, offset_y=970)
+            pyautogui.leftClick(x, y)
+            pyautogui.press('right')
+
+    def _rename_images(self, image_infos):
+        """
+        rename the image
+        """
+        self.findPattern_and_click([os.path.join(self.CONVA_ICON_PATH, 'grid_view.png')])
+        time.sleep(1)
+        for i, (key, image_info) in enumerate(image_infos.items()):
+            if i == 0:
+                x, y = self.find_canva_home_icon_and_click(offset_x=83, offset_y=226)
+                pyautogui.press(['tab', 'tab'])
+                # self.input_text(text=image_info['name'], clear_first=True)
+            else:
+                if i % 9 != 0:
+                    pyautogui.press(['tab', 'tab', 'tab', 'tab'])
+                else:
+                    pyautogui.press(['tab', 'tab', 'tab', 'tab', 'tab'])
+                # self.input_text(text=image_info['name'], clear_first=True)
+            pyperclip.copy(image_info['name'])
+            pyautogui.hotkey('ctrl', 'v')
+            time.sleep(0.2)
+        return True
 
 
-    def product_into_canva(self, product_index, imagesType):
-        disign_name = f"{imagesType}_{product_index}"
+    def product_into_canva(self, design_name, image_infos) -> dict:
+        edited_image_infos = {}
+        # # first image of width and height and create the design
+        width, height = list(image_infos.values())[0]['width'], list(image_infos.values())[0]['height']
+        image_counts = len(image_infos)
+        self._init_canva_design(width, height)
+        for i, (key, image_info) in enumerate(image_infos.copy().items()):
+            if i == 0:
+                x, y = self.find_canva_home_icon_and_click(offset_x=943, offset_y=600)
+                self.paste_image_at_position(image_info['path'], x=x, y=y, paste_delay=1.5)
+            else:
+                create_succeed = self._create_custom_size_page(image_info['width'], image_info['height'])
+                # warning then break
+                if not create_succeed:
+                    break
+                # paste the image
+                x, y = self.find_canva_home_icon_and_click(offset_x=943, offset_y=600)
+                self.paste_image_at_position(image_info['path'], x=x, y=y)
+                # scroll down
+                x, y = self.find_canva_home_icon_and_click(offset_x=172, offset_y=970, click=False)
+                self.scroll_updown(-1000)
+                # delete an item after finished
+            edited_image_infos[key] = image_infos.pop(key)
+        # setting each of image to background
+        self._set_images_as_background(edited_image_infos)
+        # rename images
+        self._rename_images(edited_image_infos)
+
+        # naming the design
+        self.find_canva_home_icon_and_click(offset_x=1467, offset_y=58)
+        self.input_text(text=design_name, clear_first=True)
+        x, y = self.find_canva_home_icon_and_click(offset_x=943, offset_y=600)
+        return image_infos
+
+    def product_into_canva_attempts(self, product_index, imagesType, attempts=5):
         product_path = os.path.join(config.PRODUCT_FOLDER_PATH, product_index, imagesType)
         product_images = fileModel.getFileList(pathDir=product_path)
         image_infos = {}
@@ -262,53 +382,22 @@ class PyautoController:
             _, _, i, size = product_image.split('.')[0].split('_')
             width, height = size.split('x')
             path = os.path.join(product_path, product_image)
-            image_infos[int(i)] = {'width': int(width), 'height': int(height), 'path': path}
-
-        self.findPattern_and_click([os.path.join(self.CONVA_ICON_PATH, 'canva_icon.png')], region=(908, 955, 479, 124))
-        self.find_canva_home_icon_and_click()
-        self.findPattern_and_click([os.path.join(self.CONVA_ICON_PATH, 'canva_create.png')])
-        self.findPattern_and_click([os.path.join(self.CONVA_ICON_PATH, 'custom_size_1.png')])
-        self.findPattern_and_click([os.path.join(self.CONVA_ICON_PATH, 'width_1.png')], offset_y=30)
-        # first image of width and height
-        width, height = list(image_infos.values())[0]['width'], list(image_infos.values())[0]['height']
-        self.input_text(text=width, clear_first=True)
-        self.findPattern_and_click([os.path.join(self.CONVA_ICON_PATH, 'height_1.png')], offset_y=30)
-        self.input_text(text=height, clear_first=True)
-        self.findPattern_and_click([os.path.join(self.CONVA_ICON_PATH, 'canva_create_design.png')], offset_y=15)
+            image_infos[int(i)] = {'width': int(width), 'height': int(height), 'path': path, 'name': product_image.split('.')[0]}
         # sorted the image infos in asc order
         image_infos = dict(sorted(image_infos.items()))
-        for i, (key, image_info) in enumerate(image_infos.items()):
-            if i == 0:
-                x, y = self.find_canva_home_icon_and_click(offset_x=943,offset_y=600)
-                self.paste_image_at_position(image_info['path'], x=x, y=y)
-            else:
-                self.findPattern_and_click([os.path.join(self.CONVA_ICON_PATH, 'create_page.png')], offset_x=10)
-                self.findPattern_and_click([os.path.join(self.CONVA_ICON_PATH, 'more.png')])
-                self.findPattern_and_click([os.path.join(self.CONVA_ICON_PATH, 'custom_size_2.png')])
-                self.findPattern_and_click([os.path.join(self.CONVA_ICON_PATH, 'width_1.png')], offset_y=40)
-                self.input_text(text=image_info['width'], clear_first=True)
-                self.findPattern_and_click([os.path.join(self.CONVA_ICON_PATH, 'height_1.png')], offset_y=40)
-                self.input_text(text=image_info['height'], clear_first=True)
-                self.findPattern_and_click([os.path.join(self.CONVA_ICON_PATH, 'canva_create_design.png')])
-                # paste the image
-                x, y = self.find_canva_home_icon_and_click(offset_x=943, offset_y=600)
-                self.paste_image_at_position(image_info['path'], x=x, y=y)
-                # scroll down
-                x, y = self.find_canva_home_icon_and_click(offset_x=172, offset_y=970, click=False)
-                self.scroll_updown(-1000)
-        # set as background image
-        x, y = self.find_canva_home_icon_and_click(offset_x=172, offset_y=970)
-        for _ in range(len(list(image_infos.keys()))+5):
-            pyautogui.press('left')
-        for _ in image_infos.items():
-            x, y = self.find_canva_home_icon_and_click(offset_x=943, offset_y=600)
-            pyautogui.rightClick(x, y)
-            self.findPattern_and_click([os.path.join(self.CONVA_ICON_PATH, 'set_image_as_background.png')])
-            x, y = self.find_canva_home_icon_and_click(offset_x=172, offset_y=970)
-            pyautogui.press('right')
 
-        # naming the design
-        self.find_canva_home_icon_and_click(offset_x=1467, offset_y=58)
-        self.input_text(text=disign_name, clear_first=True)
-        x, y = self.find_canva_home_icon_and_click(offset_x=943, offset_y=600)
+        max_attempts = 0
+        for i in range(attempts):
+            if i > 0:
+                design_name = f"{imagesType}_{product_index}_{i}"
+            else:
+                design_name = f"{imagesType}_{product_index}"
+            image_infos = self.product_into_canva(design_name, image_infos)
+            # every time finish, zip the window
+            self.find_canva_home_icon_and_click(1723, 5)
+            if len(image_infos) == 0:
+                max_attempts = i
+                break
+        print(f"{product_index} - {imagesType} completed. \nMax attempts: {max_attempts}")
         return True
+
