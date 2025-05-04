@@ -8,7 +8,7 @@ from codes.utils import paramModel, timeModel, fileModel, inputModel
 from codes.utils.paramModel import command_check, params_check
 from codes.controllers.PyputController import PyputController
 from codes.controllers.CapScreenController import CapScreenController
-from codes.controllers.AIToolsController import AIToolsController
+from codes.controllers.ChatController import ChatController
 from codes.controllers.FileController import FileController
 from codes.controllers.WebController import WebController
 from codes.controllers.ImageController import ImageController
@@ -19,7 +19,7 @@ class CommandChecker:
     def __init__(self):
         self.pyputController = PyputController()
         self.capScreenController = CapScreenController()
-        self.aiToolsController = AIToolsController()
+        self.chatController = ChatController()
         self.fileController = FileController()
         self.webController = WebController()
         self.imageController = ImageController()
@@ -49,7 +49,7 @@ class CommandChecker:
         'question': ['', str]
     })
     def ask_question(self, **params):
-        response = self.aiToolsController.get_simple_response(**params)
+        response = self.chatController.get_simple_response(**params)
         system_message = response.choices[0].message.content
         print(system_message)
         return self.COMMAND_CHECKED
@@ -64,7 +64,7 @@ class CommandChecker:
         # cap screen
         filename = self.capScreenController.cap(firstCoord, secondCoord, path=config.IMAGE_TO_TEXT_PATH)
         # transfer into txt
-        txt = self.aiToolsController.image_to_txt(filename)
+        txt = self.chatController.image_to_txt(filename)
         fileModel.write_txt(config.IMAGE_TO_TEXT_PATH, 'transfer.txt', f"{txt}\n", 'a')
         return self.COMMAND_CHECKED
 
@@ -72,7 +72,7 @@ class CommandChecker:
     @command_check(['tl'])
     def translate_text_file(self):
         txt = fileModel.read_text(config.IMAGE_TO_TEXT_PATH, 'transfer.txt')
-        translated_txt = self.aiToolsController.translate_content(txt, 'Chinese', "English", "Simple Professional")
+        translated_txt = self.chatController.translate_content(txt, 'Chinese', "English", "Simple Professional")
         fileModel.write_txt(config.IMAGE_TO_TEXT_PATH, "result.txt", f"{translated_txt}\n", 'a')
         return self.COMMAND_CHECKED
 
@@ -85,7 +85,7 @@ class CommandChecker:
         'tone': ['Simple and Professional', str],
     })
     def translate_product_name(self, **params):
-        translated_txt = self.aiToolsController.translate_product_name(**params)
+        translated_txt = self.chatController.translate_product_name(**params)
         return self.COMMAND_CHECKED
 
     # simple translate
@@ -93,7 +93,7 @@ class CommandChecker:
     def translate_user_text(self):
         print("Input the translate txt: ")
         txt = inputModel.txt_input()
-        translated_txt = self.aiToolsController.translate_content(txt, 'Chinese', "English", "Simple Professional")
+        translated_txt = self.chatController.translate_content(txt, 'Chinese', "English", "Simple Professional")
         return self.COMMAND_CHECKED
 
     # capture and translate the text
@@ -106,8 +106,8 @@ class CommandChecker:
         # cap screen
         filename = self.capScreenController.cap(firstCoord, secondCoord, path=config.IMAGE_TO_TEXT_PATH)
         # transfer into txt
-        txt = self.aiToolsController.image_to_txt(filename)
-        translated_txt = self.aiToolsController.translate_content(txt, 'Chinese', "English", "Simple Professional")
+        txt = self.chatController.image_to_txt(filename)
+        translated_txt = self.chatController.translate_content(txt, 'Chinese', "English", "Simple Professional")
         fileModel.write_txt(config.IMAGE_TO_TEXT_PATH, "result.txt", f"{translated_txt}\n", 'a')
         return self.COMMAND_CHECKED
 
@@ -122,7 +122,7 @@ class CommandChecker:
         'content': ['', str]
     })
     def get_product_keyword(self, **params):
-        keywords = self.aiToolsController.generate_product_keywords(**params)
+        keywords = self.chatController.generate_product_keywords(**params)
         print(keywords)
         return self.COMMAND_CHECKED
 
@@ -132,7 +132,7 @@ class CommandChecker:
         'tone': ['business and professional', str]
     })
     def get_product_description(self, **params):
-        description = self.aiToolsController.generate_product_description(**params)
+        description = self.chatController.generate_product_description(**params)
         print(description)
         return self.COMMAND_CHECKED
 
@@ -143,7 +143,7 @@ class CommandChecker:
         'toT': ['English', str]
     })
     def write_email(self, **params):
-        email_txt = self.aiToolsController.write_email(**params)
+        email_txt = self.chatController.write_email(**params)
         fileModel.write_txt(config.IMAGE_TO_TEXT_PATH, "result.txt", f"----\n{email_txt}\n", 'a')
         print(email_txt)
         return self.COMMAND_CHECKED

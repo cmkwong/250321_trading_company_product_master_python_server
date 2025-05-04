@@ -7,13 +7,13 @@ import base64
 from pathlib import Path
 from codes import config
 from codes.utils import fileModel
-from codes.controllers.AIToolsController import AIToolsController
+from codes.controllers.ChatController import ChatController
 
 class ImageController:
     def __init__(self):
         # self.API_URL = "https://api.deepseek.com/v1/ocr"
         self.API_URL = r"https://www.imagetotext.info/api/imageToText"
-        self.aiToolsController = AIToolsController()
+        self.chatController = ChatController()
 
     def image_to_base64(self, image_folder, image_name):
         """
@@ -75,5 +75,5 @@ class ImageController:
             extracted_txt = f"---- {img} ----\n{extracted_txt}\n"
             txt += extracted_txt
         fileModel.write_txt(folder, f'{sub_prj_folder}_{product_index}.txt', txt, 'w')
-        translated_txt = self.aiToolsController.translate_content_simple(txt, 'Chinese', "English")
+        translated_txt = self.chatController.translate_content_simple(txt, 'Chinese', "English")
         fileModel.write_txt(folder, f'{sub_prj_folder}_{product_index}_translated.txt', f"{translated_txt}\n", 'w')

@@ -15,7 +15,7 @@ import os
 
 import pytesseract
 import pyperclip
-class AIToolsController:
+class ChatController:
 
     def __init__(self):
         self.IMAGE_FOR_TXT_PATH = './docs/imageForTxt'
