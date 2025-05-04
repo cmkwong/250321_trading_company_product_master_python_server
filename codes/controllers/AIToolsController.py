@@ -87,8 +87,17 @@ class AIToolsController:
             '{content}'
         Please translate this content from {fromT} to {toT} in tone {tone}. 
         When you see the \\n, it is represented new point. 
-        And keep as like as below format: 
-         Original Text -> Translated Text
+        """
+        response = self.get_simple_response(question)
+        translated_txt = response.choices[0].message.content
+        pyperclip.copy(translated_txt)
+        print(translated_txt)
+        return translated_txt
+
+    def translate_content_simple(self, content, fromT, toT):
+        question = f"""
+        Translate below content from {fromT} to {toT}:
+            '{content}'
         """
         response = self.get_simple_response(question)
         translated_txt = response.choices[0].message.content

@@ -306,11 +306,6 @@ class PyautoController:
             pyautogui.rightClick(x, y)
             self.findPattern_and_click([os.path.join(self.CONVA_ICON_PATH, 'set_image_as_background.png')])
             x, y = self.find_canva_home_icon_and_click(offset_x=943, offset_y=600)
-            # # for rename the image
-            # pyautogui.rightClick(x, y)
-            # self.findPattern_and_click([os.path.join(self.CONVA_ICON_PATH, 'canva_info.png')])
-            # self.findPattern_and_click([os.path.join(self.CONVA_ICON_PATH, 'edit.png')])
-            # self.input_text(text=image_info['name'], clear_first=True)
             # for next page
             time.sleep(0.1)
             x, y = self.find_canva_home_icon_and_click(offset_x=172, offset_y=970)

@@ -75,5 +75,5 @@ class ImageController:
             extracted_txt = f"---- {img} ----\n{extracted_txt}\n"
             txt += extracted_txt
         fileModel.write_txt(folder, f'{sub_prj_folder}_{product_index}.txt', txt, 'w')
-        translated_txt = self.aiToolsController.translate_content(txt, 'Chinese', "English", "Simple Professional")
+        translated_txt = self.aiToolsController.translate_content_simple(txt, 'Chinese', "English")
         fileModel.write_txt(folder, f'{sub_prj_folder}_{product_index}_translated.txt', f"{translated_txt}\n", 'w')

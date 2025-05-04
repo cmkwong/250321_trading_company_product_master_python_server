@@ -44,6 +44,16 @@ class CommandChecker:
     def quit(self):
         return self.QUIT
 
+    @command_check(['ask'])
+    @params_check({
+        'question': ['', str]
+    })
+    def ask_question(self, **params):
+        response = self.aiToolsController.get_simple_response(**params)
+        system_message = response.choices[0].message.content
+        print(system_message)
+        return self.COMMAND_CHECKED
+
     # capture the text and paste it onto translate.txt
     @command_check(['ct', 'capt'])
     def capture_txt(self):
@@ -199,7 +209,7 @@ class CommandChecker:
         return self.COMMAND_CHECKED
 
     @command_check()
-    def zip2agent(self):
+    def zip(self):
         product_ids = [os.path.join(config.PRODUCT_FOLDER_PATH, t.strip()) for t in fileModel.read_text(r'./docs', 'zip_to_agent_product_id.txt').split('\n') if len(t.strip()) > 0]
         fileModel.zip_folders_combined(product_ids, os.path.join(config.PRODUCT_FOLDER_PATH, f"PetProductImages_{timeModel.get_time_str('%Y%m%d')}.zip"))
         return self.COMMAND_CHECKED
