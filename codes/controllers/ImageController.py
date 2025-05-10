@@ -1,13 +1,13 @@
 import io
 import os
 
-import torch
 import requests
 import base64
 from pathlib import Path
 from codes import config
 from codes.utils import fileModel
 from codes.controllers.ChatController import ChatController
+from paddleocr import PaddleOCR, draw_ocr
 
 class ImageController:
     def __init__(self):
@@ -67,6 +67,9 @@ class ImageController:
             return f"Error: {str(e)}"
 
     def write_extracted_txt(self, product_index, sub_prj_folder='display'):
+        """
+        Using Image2Text API to extract the text from image
+        """
         folder = os.path.join(config.PRODUCT_FOLDER_PATH, product_index, sub_prj_folder)
         images = fileModel.getFileList(folder)
         txt = ''
@@ -77,3 +80,8 @@ class ImageController:
         fileModel.write_txt(folder, f'{sub_prj_folder}_{product_index}.txt', txt, 'w')
         translated_txt = self.chatController.translate_content_simple(txt, 'Chinese', "English")
         fileModel.write_txt(folder, f'{sub_prj_folder}_{product_index}_translated.txt', f"{translated_txt}\n", 'w')
+
+    def getting_bbox(self):
+        # init the OCR model
+        ocr = PaddleOCR(use_angle_cls=True, lang='ch')
+

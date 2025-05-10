@@ -106,13 +106,18 @@ class ChatController:
         return translated_txt
 
     # translate the product name
-    def translate_product_name(self, content, fromT, toT, tone):
+    def translate_product_name(self, content, fromT, toT, tone, seo_txt):
         question = f"""
-        This is product name '{content}' in language {fromT}. Firstly, please translate into {toT}. Secondly, using this {toT} content to give product name with tone {tone}.
-        The translation should be capitalized for first charactor in each word.
+        This is product name '{content}' in language {fromT}. Firstly, please translate into {toT}. Secondly, using this {toT} content to give product name.
+        Be notice below condition:
+        1. The translation should be capitalized for first charactor in each word.
+        2. With tone {tone}
+        3. Do not need the special charactor
+        3. The translated name should contains below hot keyword:
+            {seo_txt}
         """
         response = self.get_simple_response(question)
-        product_name = response.choices[0].message.content.replace(',', '')
+        product_name = response.choices[0].message.content.replace(',', ' ').replace('-', ' ').replace('|', ' ').replace('–', ' ').replace('  ', ' ')
         pyperclip.copy(product_name)
         print(product_name)
         return product_name

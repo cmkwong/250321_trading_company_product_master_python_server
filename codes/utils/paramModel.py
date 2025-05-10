@@ -20,7 +20,7 @@ def decodeParam(input_data, dataType):
         required_input_data = input_data
     elif dataType == bool:
         required_input_data = False
-        if input_data.upper() == 'TRUE' or input_data:
+        if input_data.upper() == 'TRUE':
             required_input_data = True
     # as space/empty cannot int / float the transform
     elif dataType in (int, float) and (input_data == '' or input_data.isspace()):

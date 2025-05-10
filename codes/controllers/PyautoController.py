@@ -314,7 +314,7 @@ class PyautoController:
 
     def _rename_images(self, image_infos):
         """
-        rename the image
+        product_SEO_keywords the image
         """
         self.findPattern_and_click([os.path.join(self.CONVA_ICON_PATH, 'grid_view.png')])
         time.sleep(1)
@@ -360,7 +360,7 @@ class PyautoController:
             edited_image_infos[key] = image_infos.pop(key)
         # setting each of image to background
         self._set_images_as_background(edited_image_infos)
-        # rename images
+        # product_SEO_keywords images
         self._rename_images(edited_image_infos)
 
         # naming the design

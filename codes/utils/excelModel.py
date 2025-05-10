@@ -10,7 +10,7 @@ def readExcel(path, required_sheets, concat=True, columnMapper=None):
     for sheet_name in required_sheets:
         if sheet_name.lower() in dfs.keys():   # check if required sheet in excel file
             if columnMapper:
-                # rename column name, if exist
+                # product_SEO_keywords column name, if exist
                 dfs[sheet_name] = dfs[sheet_name].rename(columnMapper, axis='columns')
                 # drop not required columns
                 dfs[sheet_name] = dfs[sheet_name][dfs[sheet_name].columns.intersection(set(columnMapper.values()))]

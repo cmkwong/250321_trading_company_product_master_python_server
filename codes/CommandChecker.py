@@ -16,6 +16,7 @@ from codes.controllers.PyautoController import PyautoController
 
 class CommandChecker:
 
+
     def __init__(self):
         self.pyputController = PyputController()
         self.capScreenController = CapScreenController()
@@ -30,6 +31,9 @@ class CommandChecker:
         self.COMMAND_NOT_CHECKED = 'NOT_CHECKED'
         self.ans = None  # being passed the command what user input
         self.COMMAND_HIT = False
+
+        # variables
+        self.Product_Index = ''
 
         # control variable
         self.QUIT = "quit"
@@ -83,9 +87,11 @@ class CommandChecker:
         'fromT': ['Chinese', str],
         'toT': ['English', str],
         'tone': ['Simple and Professional', str],
+        'seo_filename': ['IndustryKeyword-2025-05-08.xls', str]
     })
     def translate_product_name(self, **params):
-        translated_txt = self.chatController.translate_product_name(**params)
+        seo_txt = self.fileController.readSEOWords_Alibaba(params['seo_filename'])
+        translated_txt = self.chatController.translate_product_name(params['content'], params['fromT'], params['toT'], params['tone'], seo_txt)
         return self.COMMAND_CHECKED
 
     # simple translate
@@ -154,14 +160,15 @@ class CommandChecker:
         'folderName': ['', str]
     })
     def create_product_folder(self, **params):
-        self.fileController.create_product_folder(**params)
+        self.Product_Index = self.fileController.create_product_folder(**params)
         return self.COMMAND_CHECKED
 
     # download 1688 images and video
     @command_check(['d1688'])
     @params_check({
         'website': ['', str],
-        'product_id': ['', str]
+        'product_id': ['', str],
+        'quit_finally': [True, bool]
     })
     def download_1688_src(self, **params):
         self.webController.download_1688_images(**params)

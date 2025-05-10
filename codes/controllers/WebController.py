@@ -7,6 +7,7 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver import  ActionChains
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
+from fake_useragent import UserAgent
 
 import matplotlib.pyplot as plt
 import requests
@@ -19,6 +20,7 @@ from codes.utils import fileModel
 class WebController:
     def __init__(self):
         executable_path = os.path.join(config.CHROME_WEB_DRIVER_PATH, 'chromedriver.exe')
+
         self.service = Service(executable_path=executable_path)
         self.options = webdriver.ChromeOptions()
         self.driver = None
@@ -128,11 +130,16 @@ class WebController:
 
     def open_driver(self, website):
         if self.is_quit:
+            # making fake agent
+            # ua = UserAgent()
+            # user_agent = ua.random
+            # self.options.add_argument(f'user-agent={user_agent}')
+            # create driver
             self.driver = webdriver.Chrome(service=self.service, options=self.options)
             self.is_quit = False
         self.driver.get(website)
 
-    def download_1688_images(self, website, product_id):
+    def download_1688_images(self, website, product_id, quit_finally=False):
         # setup counter
         counts = {'display': 1, 'video': 1, 'description': 1}
         try:
@@ -181,8 +188,9 @@ class WebController:
                 filename = f"des_{product_id}_{count_str}{ext}"
                 self.download_image(des_img_url,  os.path.join(config.PRODUCT_FOLDER_PATH, product_id, 'description', filename))
         finally:
-            self.driver.quit()
-            self.is_quit = True
+            if quit_finally:
+                self.driver.quit()
+                self.is_quit = True
         return
 
 
