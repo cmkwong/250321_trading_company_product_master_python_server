@@ -87,7 +87,7 @@ class CommandChecker:
         'fromT': ['Chinese', str],
         'toT': ['English', str],
         'tone': ['Simple and Professional', str],
-        'seo_filename': ['IndustryKeyword-2025-05-08.xls', str]
+        'seo_filename': ['', str]
     })
     def translate_product_name(self, **params):
         seo_txt = self.fileController.readSEOWords_Alibaba(params['seo_filename'])

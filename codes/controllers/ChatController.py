@@ -111,13 +111,18 @@ class ChatController:
         This is product name '{content}' in language {fromT}. Firstly, please translate into {toT}. Secondly, using this {toT} content to give product name.
         Be notice below condition:
         1. The translation should be capitalized for first charactor in each word.
-        2. With tone {tone}
+        2. The Optimized Product Name should With tone {tone}
         3. Do not need the special charactor
-        3. The translated name should contains below hot keyword:
-            {seo_txt}
+        4. Apart from Optimized Product Name, give me the simply translated product name
+        5. The Optimized Product Name meaning of usage must be same to the original product name
         """
+        if seo_txt:
+            question += """
+                6. The translated name should contains below hot keyword:
+                    {seo_txt}
+            """
         response = self.get_simple_response(question)
-        product_name = response.choices[0].message.content.replace(',', ' ').replace('-', ' ').replace('|', ' ').replace('–', ' ').replace('  ', ' ')
+        product_name = response.choices[0].message.content.replace(',', ' ').replace('-', ' ').replace('|', ' ').replace('–', ' ').replace('  ', ' ').replace('  ', ' ')
         pyperclip.copy(product_name)
         print(product_name)
         return product_name
