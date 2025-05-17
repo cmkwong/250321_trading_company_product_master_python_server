@@ -23,7 +23,8 @@ class PyautoController:
                               confidence=0.8,
                               region: Optional[Tuple[int, int, int, int]] = None,
                               grayscale=True,
-                              click=True
+                              click=True,
+                              left=True
                               ):
         """
         Wait to find an image on screen and click it with optional offset
@@ -63,7 +64,11 @@ class PyautoController:
                     print(f"Found at: {target_x},{target_y} - Clicking...")
 
                     pyautogui.moveTo(target_x, target_y, duration=0.2)
-                    if click: pyautogui.click()
+                    if click:
+                        if left:
+                            pyautogui.click()
+                        else:
+                            pyautogui.rightClick()
                     time.sleep(0.2)
                     return target_x, target_y
 
@@ -114,6 +119,15 @@ class PyautoController:
         else:
             pyautogui.scroll(magnitude)
         return True
+
+    def scroll_startend(self, home=True):
+        if home:
+            pyautogui.hotkey('ctrl', 'home')
+        else:
+            pyautogui.hotkey('ctrl', 'end')
+
+    def press_key(self, key):
+        pyautogui.press(key)
 
     def input_text(
             self,

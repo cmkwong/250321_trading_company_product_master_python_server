@@ -19,6 +19,7 @@ from PIL import Image
 
 from codes import config
 from codes.utils import fileModel
+from codes.controllers.PyautoController import PyautoController
 
 class WebController:
     def __init__(self):
@@ -28,6 +29,10 @@ class WebController:
         self.options = webdriver.ChromeOptions()
         self.driver = None
         self.is_quit = True
+
+        # controller
+        self.PATTERN_1688_PATH = os.path.join(config.AUTO_IMAGE, '1688')
+        self.pyautoController = PyautoController()
 
     def get_image_size(self, image_path):
         img = plt.imread(image_path)
@@ -143,11 +148,39 @@ class WebController:
         self.driver.get(website)
 
     def download_1688_images_from_html(self, product_id):
-        # build soup
+        # finding first image
+        self.pyautoController.findPattern_and_click([os.path.join(self.PATTERN_1688_PATH, 'reference_1688.png')], 50, 500)
+        self.pyautoController.findPattern_and_click([os.path.join(self.PATTERN_1688_PATH, 'first_video.png')], 20, 0, click=False)
+        # self.pyautoController.findPattern_and_click([os.path.join(self.PATTERN_1688_PATH, 'reference_1688.png')], 50, 500, grayscale=False)
+        for _ in range(4):
+            self.pyautoController.scroll_startend(False)
+            time.sleep(0.5)
+            self.pyautoController.scroll_startend(True)
+            time.sleep(0.5)
+        # getting html text
+        self.pyautoController.findPattern_and_click([os.path.join(self.PATTERN_1688_PATH, 'reference_1688.png')], 50, 500)
+        self.pyautoController.press_key('F12')
+        time.sleep(1)
+        self.pyautoController.findPattern_and_click([os.path.join(self.PATTERN_1688_PATH, 'html_text.png')], left=False)
+        self.pyautoController.findPattern_and_click([os.path.join(self.PATTERN_1688_PATH, 'copy.png')])
+        self.pyautoController.findPattern_and_click([os.path.join(self.PATTERN_1688_PATH, 'copy_element.png')])
+        self.pyautoController.findPattern_and_click([os.path.join(self.PATTERN_1688_PATH, 'reference_1688.png')], 50, 500)
+        self.pyautoController.press_key('F12')
+        # getting html text
         website_html_txt = pyperclip.paste()
+        # website_html_txt = fileModel.read_text(config.DOCS, "html.txt")
         soup = BeautifulSoup(website_html_txt)
         # set variable
         counts = {'display': 1, 'video': 1, 'description': 1}
+
+        # find videos
+        video_urls = []
+        videos = soup.find_all('video', {"class": 'lib-video'})
+        for video in videos:
+            url = video['src']
+            video_urls.append(url)
+            self._download_naming_src(url, product_id, counts['video'], 'video')
+            counts['video'] += 1
 
         # find display images
         display_images = soup.find_all('div', {"class": 'detail-gallery-turn-wrapper'})
@@ -157,14 +190,6 @@ class WebController:
             display_image_urls.append(url)
             self._download_naming_src(url, product_id, counts['display'], 'display')
             counts['display'] += 1
-        # find videos
-        video_urls = []
-        videos = soup.find_all('video', {"class": 'lib-video'})
-        for video in videos:
-            url = video['src']
-            video_urls.append(url)
-            self._download_naming_src(url, product_id, counts['video'], 'video')
-            counts['video'] += 1
 
         # find description image
         description_image_urls = []
