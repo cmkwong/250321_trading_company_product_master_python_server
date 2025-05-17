@@ -174,6 +174,16 @@ class CommandChecker:
         self.webController.download_1688_images(**params)
         return self.COMMAND_CHECKED
 
+    # download 1688 images and video from html text
+    @command_check(['t1688'])
+    @params_check({
+        'product_id': ['', str]
+    })
+    def download_1688_src_text(self, **params):
+        # html = fileModel.read_text(config.DOCS, "html.txt")
+        self.webController.download_1688_images_from_html(params['product_id'])
+        return self.COMMAND_CHECKED
+
     @command_check(['re'])
     def reopen_driver(self):
         self.webController.init_driver()

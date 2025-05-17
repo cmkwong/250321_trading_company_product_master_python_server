@@ -9,6 +9,9 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from fake_useragent import UserAgent
 
+from bs4 import BeautifulSoup
+
+import pyperclip
 import matplotlib.pyplot as plt
 import requests
 from urllib.parse import urlparse
@@ -139,6 +142,49 @@ class WebController:
             self.is_quit = False
         self.driver.get(website)
 
+    def download_1688_images_from_html(self, product_id):
+        # build soup
+        website_html_txt = pyperclip.paste()
+        soup = BeautifulSoup(website_html_txt)
+        # set variable
+        counts = {'display': 1, 'video': 1, 'description': 1}
+
+        # find display images
+        display_images = soup.find_all('div', {"class": 'detail-gallery-turn-wrapper'})
+        display_image_urls = []
+        for display_image in display_images:
+            url = display_image.find('img')['src']
+            display_image_urls.append(url)
+            self._download_naming_src(url, product_id, counts['display'], 'display')
+            counts['display'] += 1
+        # find videos
+        video_urls = []
+        videos = soup.find_all('video', {"class": 'lib-video'})
+        for video in videos:
+            url = video['src']
+            video_urls.append(url)
+            self._download_naming_src(url, product_id, counts['video'], 'video')
+            counts['video'] += 1
+
+        # find description image
+        description_image_urls = []
+        description_images = soup.find_all('img', {"class": 'desc-img-loaded'})
+        for description_image in description_images:
+            url = description_image['src']
+            description_image_urls.append(url)
+            self._download_naming_src(url, product_id, counts['description'], 'description')
+            counts['description'] += 1
+        return True
+
+    def _download_naming_src(self, url, product_id, count, src_type='video'):
+        ext = fileModel.getFileExt(url)
+        count_str = f"{count}".zfill(2)
+        filename = f"{src_type}_{product_id}_{count_str}{ext}"
+        if src_type == 'video':
+            self.download_video(url, os.path.join(config.PRODUCT_FOLDER_PATH, product_id, src_type, filename))
+        else:
+            self.download_image(url, os.path.join(config.PRODUCT_FOLDER_PATH, product_id, src_type, filename))
+
     def download_1688_images(self, website, product_id, quit_finally=False):
         # setup counter
         counts = {'display': 1, 'video': 1, 'description': 1}
@@ -158,17 +204,11 @@ class WebController:
                 if len(videos) > 0:
                     # getting extension
                     video_url = self.driver.find_element(By.CSS_SELECTOR, '.lib-video.vjs-has-started').find_element(By.TAG_NAME, 'video').get_attribute('src')
-                    ext = fileModel.getFileExt(video_url)
-                    count_str = f"{counts['video']}".zfill(2)
-                    filename = f"video_{product_id}_{count_str}{ext}"
-                    self.download_video(video_url, os.path.join(config.PRODUCT_FOLDER_PATH, product_id, 'video', filename))
+                    self._download_naming_src(video_url, product_id, counts['video'], 'video')
                     counts['video'] += 1
                 else:
                     image_url = is_image[0].get_attribute('src')
-                    ext = fileModel.getFileExt(image_url)
-                    count_str = f"{counts['display']}".zfill(2)
-                    filename = f"img_{product_id}_{count_str}{ext}"
-                    self.download_image(image_url, os.path.join(config.PRODUCT_FOLDER_PATH, product_id, 'display', filename))
+                    self._download_naming_src(image_url, product_id, counts['display'], 'display')
                     counts['display'] += 1
                 time.sleep(0.5)
             # find the product description
@@ -183,10 +223,8 @@ class WebController:
             elements = self.driver.find_elements(By.CLASS_NAME, 'desc-img-loaded')
             for i, element in enumerate(elements):
                 des_img_url = element.get_attribute('src')
-                ext = fileModel.getFileExt(des_img_url)
-                count_str = f"{i+1}".zfill(2)
-                filename = f"des_{product_id}_{count_str}{ext}"
-                self.download_image(des_img_url,  os.path.join(config.PRODUCT_FOLDER_PATH, product_id, 'description', filename))
+                self._download_naming_src(des_img_url, product_id, counts['description'], 'description')
+                counts['description'] += 1
         finally:
             if quit_finally:
                 self.driver.quit()
