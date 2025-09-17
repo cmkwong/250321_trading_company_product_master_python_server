@@ -39,11 +39,14 @@ class WebController:
         height, width = img.shape[:2]
         return width, height
 
-    def download_image(self, url, save_path=None):
+    def download_image(self, url, save_path=None, hard_ext=None):
         temp_path = None
         try:
+            headers = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/100.0.4896.127 Safari/537.36"
+            }
             # Send GET request
-            response = requests.get(url, stream=True)
+            response = requests.get(url, headers=headers, stream=True)
             response.raise_for_status()
 
             # Determine filename and path
@@ -70,6 +73,8 @@ class WebController:
             img.close()
 
             # Construct new filename with dimensions
+            if hard_ext:
+                ext = hard_ext
             new_path = f"{base}_{width}x{height}{ext}"
 
             # Rename temp file to final path
@@ -87,6 +92,12 @@ class WebController:
 
     def download_video(self, url, save_path=None):
         try:
+            # Ensure URL starts with https://
+            if not url.startswith('https://'):
+                if url.startswith('//'):
+                    url = 'https:' + url
+                elif not url.startswith(('http://', 'https://')):
+                    url = 'https://' + url
             # Set headers to mimic a browser request
             headers = {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
@@ -147,29 +158,68 @@ class WebController:
             self.is_quit = False
         self.driver.get(website)
 
-    def download_1688_images_from_html(self, product_id):
+    def download_1688_images_from_html(self, product_id, version=1):
+        img_alters = {}
+        html_alters = {}
+        if version == 1:
+            img_alters['reference_1688'] = {'image': 'reference_1688.png', 'offset_x': 30, 'offset_y': 500}
+            img_alters['html_text'] = {'image': 'html_text_v1.png'}
+            img_alters['first_video'] = {'image': 'first_video.png', 'offset_x': 20, 'offset_y': 0}
+            html_alters['display'] = {'class': 'detail-gallery-turn-wrapper'}
+            html_alters['description'] = {"class": 'desc-img-loaded'}
+        else:
+            img_alters['reference_1688'] = {'image': 'reference_1688.png', 'offset_x': -46, 'offset_y': 500}
+            img_alters['html_text'] = {'image': 'html_text.png'}
+            img_alters['first_video'] = {'image': 'follow.png', 'offset_x': -273, 'offset_y': 120}
+            html_alters['display'] = {'class': 'ant-image v-image-wrap'}
+            html_alters['description'] = {"loading": 'lazy'}
+
         # finding first image
-        self.pyautoController.findPattern_and_click([os.path.join(self.PATTERN_1688_PATH, 'reference_1688.png')], 50, 500)
-        self.pyautoController.findPattern_and_click([os.path.join(self.PATTERN_1688_PATH, 'first_video.png')], 20, 0, click=False)
+        self.pyautoController.findPattern_and_click([os.path.join(self.PATTERN_1688_PATH, 'browser_box_icon.png')], click='left', offset_y=200)
+        self.pyautoController.scroll_startend(True)
+        self.pyautoController.findPattern_and_click([os.path.join(self.PATTERN_1688_PATH, img_alters['reference_1688']['image'])], img_alters['reference_1688']['offset_x'], img_alters['reference_1688']['offset_y'])
+        # self.pyautoController.findPattern_and_click([os.path.join(self.PATTERN_1688_PATH, img_alters['first_video']['image'])], img_alters['first_video']['offset_x'], img_alters['first_video']['offset_y'], click='')
         # self.pyautoController.findPattern_and_click([os.path.join(self.PATTERN_1688_PATH, 'reference_1688.png')], 50, 500, grayscale=False)
-        for _ in range(4):
+        for _ in range(3):
             self.pyautoController.scroll_startend(False)
-            time.sleep(0.5)
+            time.sleep(0.2)
             self.pyautoController.scroll_startend(True)
-            time.sleep(0.5)
+            time.sleep(0.2)
         # getting html text
-        self.pyautoController.findPattern_and_click([os.path.join(self.PATTERN_1688_PATH, 'reference_1688.png')], 50, 500)
+        self.pyautoController.findPattern_and_click([os.path.join(self.PATTERN_1688_PATH, img_alters['reference_1688']['image'])], img_alters['reference_1688']['offset_x'], img_alters['reference_1688']['offset_y'])
         self.pyautoController.press_key('F12')
         time.sleep(1)
-        self.pyautoController.findPattern_and_click([os.path.join(self.PATTERN_1688_PATH, 'html_text.png')], left=False)
+        self.pyautoController.findPattern_and_click([os.path.join(self.PATTERN_1688_PATH, img_alters['html_text']['image'])], click='right')
         self.pyautoController.findPattern_and_click([os.path.join(self.PATTERN_1688_PATH, 'copy.png')])
         self.pyautoController.findPattern_and_click([os.path.join(self.PATTERN_1688_PATH, 'copy_element.png')])
-        self.pyautoController.findPattern_and_click([os.path.join(self.PATTERN_1688_PATH, 'reference_1688.png')], 50, 500)
-        self.pyautoController.press_key('F12')
+        self.pyautoController.findPattern_and_click([os.path.join(self.PATTERN_1688_PATH, img_alters['reference_1688']['image'])], img_alters['reference_1688']['offset_x'], img_alters['reference_1688']['offset_y'], click='')
         # getting html text
         website_html_txt = pyperclip.paste()
         # website_html_txt = fileModel.read_text(config.DOCS, "html.txt")
         soup = BeautifulSoup(website_html_txt)
+
+        # getting the shadow-root html
+        shadow_soup = None
+        if version == 2:
+            self.pyautoController.press_keys(['ctrl', 'f'])
+            self.pyautoController.paste_text('html-description')
+            time.sleep(0.2)
+            self.pyautoController.press_key('enter')
+            # expand the html recursely
+            self.pyautoController.findPattern_and_click([os.path.join(self.PATTERN_1688_PATH, 'html_description_img.png')], offset_y=-10, click='double')
+            # self.pyautoController.findPattern_and_click([os.path.join(self.PATTERN_1688_PATH, 'expand_recursely.png')])
+            self.pyautoController.findPattern_and_click([os.path.join(self.PATTERN_1688_PATH, 'shadow-root.png')], click='double')
+            self.pyautoController.findPattern_and_click([os.path.join(self.PATTERN_1688_PATH, 'id_detail.png')], click='right')
+            # self.pyautoController.findPattern_and_click([os.path.join(self.PATTERN_1688_PATH, 'expand_recursely.png')])
+            # copy the target shadow-roots elements
+            # self.pyautoController.findPattern_and_click([os.path.join(self.PATTERN_1688_PATH, 'copy_imgs_style.png')], click='right')
+            self.pyautoController.findPattern_and_click([os.path.join(self.PATTERN_1688_PATH, 'copy.png')])
+            self.pyautoController.findPattern_and_click([os.path.join(self.PATTERN_1688_PATH, 'copy_element.png')])
+            website_html_txt = pyperclip.paste()
+            shadow_soup = BeautifulSoup(website_html_txt)
+        # close the devtool
+        self.pyautoController.press_key('F12')
+
         # set variable
         counts = {'display': 1, 'video': 1, 'description': 1}
 
@@ -183,32 +233,45 @@ class WebController:
             counts['video'] += 1
 
         # find display images
-        display_images = soup.find_all('div', {"class": 'detail-gallery-turn-wrapper'})
+        display_images = soup.find_all('div', html_alters['display'])
         display_image_urls = []
         for display_image in display_images:
             url = display_image.find('img')['src']
             display_image_urls.append(url)
-            self._download_naming_src(url, product_id, counts['display'], 'display')
+            self._download_naming_src(url, product_id, counts['display'], 'display', '.jpg')
             counts['display'] += 1
 
         # find description image
         description_image_urls = []
-        description_images = soup.find_all('img', {"class": 'desc-img-loaded'})
+        if version == 1:
+            description_images = soup.find_all('img', html_alters['description'])
+        else:
+            description_images = shadow_soup.find_all('img', html_alters['description'])
         for description_image in description_images:
+            # if 'src' not in description_image:
+            #     continue
             url = description_image['src']
             description_image_urls.append(url)
             self._download_naming_src(url, product_id, counts['description'], 'description')
             counts['description'] += 1
         return True
 
-    def _download_naming_src(self, url, product_id, count, src_type='video'):
+    # finding the
+    def copy_shadow_root_html(self):
+        self.pyautoController.press_keys(['ctrl', 'F'])
+
+
+    def _download_naming_src(self, url, product_id, count, src_type='video', hard_ext=None):
+        # some url has _.webp in after the file name
+        # url = url.replace('_.webp', '')
+
         ext = fileModel.getFileExt(url)
         count_str = f"{count}".zfill(2)
         filename = f"{src_type}_{product_id}_{count_str}{ext}"
         if src_type == 'video':
             self.download_video(url, os.path.join(config.PRODUCT_FOLDER_PATH, product_id, src_type, filename))
         else:
-            self.download_image(url, os.path.join(config.PRODUCT_FOLDER_PATH, product_id, src_type, filename))
+            self.download_image(url, os.path.join(config.PRODUCT_FOLDER_PATH, product_id, src_type, filename), hard_ext)
 
     def download_1688_images(self, website, product_id, quit_finally=False):
         # setup counter

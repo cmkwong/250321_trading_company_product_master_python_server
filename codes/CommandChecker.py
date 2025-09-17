@@ -177,11 +177,12 @@ class CommandChecker:
     # download 1688 images and video from html text
     @command_check(['t1688'])
     @params_check({
-        'product_id': ['', str]
+        'product_id': ['', str],
+        'version': [2, int]
     })
     def download_1688_src_text(self, **params):
         # html = fileModel.read_text(config.DOCS, "html.txt")
-        self.webController.download_1688_images_from_html(params['product_id'])
+        self.webController.download_1688_images_from_html(params['product_id'], params['version'])
         return self.COMMAND_CHECKED
 
     @command_check(['re'])

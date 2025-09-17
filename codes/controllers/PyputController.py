@@ -1,5 +1,6 @@
 import pynput
 from pynput import mouse, keyboard
+import pyautogui
 
 class PyputController:
 

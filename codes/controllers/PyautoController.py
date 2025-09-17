@@ -15,6 +15,11 @@ class PyautoController:
         self.pyputController = PyputController()
         self.CONVA_ICON_PATH = os.path.join(config.AUTO_IMAGE, 'canva')
 
+    # ctrl + v to paste the text
+    def paste_text(self, text):
+        pyperclip.copy(text)
+        pyautogui.hotkey('ctrl', 'v')
+
     def findPattern_and_click(self,
                               patternImgs: list,
                               offset_x=0,
@@ -23,8 +28,7 @@ class PyautoController:
                               confidence=0.8,
                               region: Optional[Tuple[int, int, int, int]] = None,
                               grayscale=True,
-                              click=True,
-                              left=True
+                              click='left' # 'left' / 'right' / 'double' / ''
                               ):
         """
         Wait to find an image on screen and click it with optional offset
@@ -64,11 +68,12 @@ class PyautoController:
                     print(f"Found at: {target_x},{target_y} - Clicking...")
 
                     pyautogui.moveTo(target_x, target_y, duration=0.2)
-                    if click:
-                        if left:
-                            pyautogui.click()
-                        else:
-                            pyautogui.rightClick()
+                    if click == 'left':
+                        pyautogui.click()
+                    elif click == 'right':
+                        pyautogui.rightClick()
+                    elif click == 'double':
+                        pyautogui.doubleClick()
                     time.sleep(0.2)
                     return target_x, target_y
 
@@ -128,6 +133,9 @@ class PyautoController:
 
     def press_key(self, key):
         pyautogui.press(key)
+
+    def press_keys(self, keys):
+        pyautogui.hotkey(*keys)
 
     def input_text(
             self,
@@ -243,7 +251,7 @@ class PyautoController:
                         continue
 
                     bbox = (first_click.x, first_click.y, width, height)
-                    print(f"\nFinal bounding box: {bbox}")
+                    print(f"\nFinal bounding box (x, y, width, height): {bbox}")
                     return bbox
 
                 time.sleep(0.1)
@@ -258,7 +266,7 @@ class PyautoController:
             print(f"\nError occurred: {str(e)}")
             return None
 
-    def find_canva_home_icon_and_click(self, offset_x=0, offset_y=0, click=True):
+    def find_canva_home_icon_and_click(self, offset_x=0, offset_y=0, click='left'):
         return self.findPattern_and_click([os.path.join(self.CONVA_ICON_PATH, 'canva_home_1.png'),
                                     os.path.join(self.CONVA_ICON_PATH, 'canva_home_2.png')],
                                    offset_x=offset_x,
@@ -301,7 +309,7 @@ class PyautoController:
         pyautogui.press(['tab', 'tab', 'tab'])
         pyautogui.press('enter')
         time.sleep(0.2)
-        if not self.findPattern_and_click([os.path.join(self.CONVA_ICON_PATH, 'canva_warning_20_types.png')], click=False, timeout=1) == (False, False):
+        if not self.findPattern_and_click([os.path.join(self.CONVA_ICON_PATH, 'canva_warning_20_types.png')], click='', timeout=1) == (False, False):
             return False
         return True
 
