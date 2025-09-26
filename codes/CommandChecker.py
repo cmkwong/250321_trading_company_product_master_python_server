@@ -13,6 +13,7 @@ from codes.controllers.FileController import FileController
 from codes.controllers.WebController import WebController
 from codes.controllers.ImageController import ImageController
 from codes.controllers.PyautoController import PyautoController
+from codes.controllers.ShippingController import ShippingController
 
 class CommandChecker:
 
@@ -25,6 +26,7 @@ class CommandChecker:
         self.webController = WebController()
         self.imageController = ImageController()
         self.pyautoController = PyautoController()
+        self.shippingController = ShippingController()
 
         # constants
         self.COMMAND_CHECKED = 'CHECKED'
@@ -232,4 +234,16 @@ class CommandChecker:
         fileModel.zip_folders_combined(product_ids, os.path.join(config.PRODUCT_FOLDER_PATH, f"PetProductImages_{timeModel.get_time_str('%Y%m%d')}.zip"))
         return self.COMMAND_CHECKED
 
+    @command_check()
+    @params_check({
+        "l": ['', float],
+        "w": ['', float],
+        "h": ['', float],
+        "kg": ['', float],
+        "min_pcs": [1, int],
+        "max_pcs": ['', int]
+    })
+    def packing(self, **params):
+        self.shippingController.findPacking(**params)
+        return self.COMMAND_CHECKED
 

@@ -1,8 +1,11 @@
 
 def print_dict(data_dict):
+    base = 5
     print("~*~*~*~*~*~*~*~*~*~*~*~*~*~*~*~*~*~*~*~*")
     for key, value in data_dict.items():
-        print("{}:\t{:.5f}".format(key, value))
+        if isinstance(value, float):
+            value = f"{value:.{base}f}"
+        print(f"{key:>20}:{value:>20}")
 
 def loss_status(writer, loss, episode, mode='train'):
     """
