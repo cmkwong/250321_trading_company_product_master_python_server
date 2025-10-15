@@ -58,3 +58,31 @@ def transfer_all_xlsx_to_csv(main_path):
         print("Writing the {}".format(csv_file))
         df.to_csv(csv_full_path, encoding='utf-8', index=False, header=False)
     return True
+
+def write_df_and_open(df, folderName:str, fileName:str):
+    # checking folderName not created
+    target_dir = os.path.abspath(folderName)    # Get absolute path for reliability
+    # Create directory with existence check
+    try:
+        os.makedirs(target_dir, exist_ok=True)
+        status = f"Directory created: {target_dir}" if not os.path.exists(target_dir) else f"Directory already exists: {target_dir}"
+    except Exception as e:
+        status = f"Error creating directory: {str(e)}"
+
+    # join into full path
+    fullPath = os.path.join(folderName, fileName)
+
+    # Create a Pandas Excel writer using XlsxWriter as the engine.
+    writer = pd.ExcelWriter(fullPath, engine='xlsxwriter')
+
+    df.to_excel(writer, sheet_name='Sheet1')
+    # read the worksheet
+    worksheet = writer.sheets['Sheet1']
+    worksheet.freeze_panes(1, 0)  # freeze first-row
+    worksheet.autofit()  # auto fit column width
+    worksheet.autofilter(0, 0, df.shape[0], df.shape[1])
+    writer.close()
+
+    # open the excel
+    os.startfile(os.path.abspath(fullPath))
+    print(f"Excel output into {fullPath}")

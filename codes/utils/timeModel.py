@@ -2,9 +2,32 @@ from datetime import datetime
 from dateutil.relativedelta import relativedelta
 import pytz
 
-def get_time_str(format='%Y%m%d%H%M%S'):
-    now = datetime.now()
-    return now.strftime(format)
+# def get_time_str(format='%Y%m%d%H%M%S'):
+#     now = datetime.now()
+#     return now.strftime(format)
+
+# get tuple time to string
+def getTimeS(dateTuple=None, outputFormat="%Y-%m-%d %H:%M:%S"):
+    """
+    dateTuple if null/False, get the current time
+    """
+    if not dateTuple:
+        now = datetime.today()
+        dateTuple = (now.year, now.month, now.day, now.hour, now.minute, now.second)
+    else:
+        # fill the tuple if it is not full, like (2022, 12, 30) -> (2022, 12, 30, 0, 0, 0)
+        lenLeft = 7 - len(dateTuple)
+        for c in range(lenLeft):
+            dateTuple = dateTuple + (0,)
+    # replace and get required date string
+    requiredDate = outputFormat \
+        .replace('%Y', f"{dateTuple[0]}".zfill(4)) \
+        .replace('%m', f"{dateTuple[1]}".zfill(2)) \
+        .replace('%d', f"{dateTuple[2]}".zfill(2)) \
+        .replace('%H', f"{dateTuple[3]}".zfill(2)) \
+        .replace('%M', f"{dateTuple[4]}".zfill(2)) \
+        .replace('%S', f"{dateTuple[5]}".zfill(2))
+    return requiredDate
 
 # split into month between start and end datetime
 def split_month_period(start, end, format="%Y-%m-%d %H:%M:%S"):

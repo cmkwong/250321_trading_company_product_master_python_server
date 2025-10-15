@@ -334,7 +334,7 @@ class PyautoController:
             pyautogui.leftClick(x, y)
             pyautogui.press('right')
 
-    def _rename_images(self, image_infos):
+    def _rename_images(self, image_infos, index_only=False):
         """
         product_SEO_keywords the image
         """
@@ -351,7 +351,10 @@ class PyautoController:
                 else:
                     pyautogui.press(['tab', 'tab', 'tab', 'tab', 'tab'])
                 # self.input_text(text=image_info['name'], clear_first=True)
-            pyperclip.copy(image_info['name'])
+            if not index_only:
+                pyperclip.copy(image_info['name'])
+            else:
+                pyperclip.copy(f"{i+1}")
             pyautogui.hotkey('ctrl', 'v')
             time.sleep(0.2)
         return True
@@ -365,8 +368,9 @@ class PyautoController:
         self._init_canva_design(width, height)
         for i, (key, image_info) in enumerate(image_infos.copy().items()):
             if i == 0:
+                time.sleep(1)
                 x, y = self.find_canva_home_icon_and_click(offset_x=943, offset_y=600)
-                self.paste_image_at_position(image_info['path'], x=x, y=y, paste_delay=1.5)
+                self.paste_image_at_position(image_info['path'], x=x, y=y, paste_delay=3)
             else:
                 create_succeed = self._create_custom_size_page(image_info['width'], image_info['height'])
                 # warning then break
@@ -383,7 +387,7 @@ class PyautoController:
         # setting each of image to background
         self._set_images_as_background(edited_image_infos)
         # product_SEO_keywords images
-        self._rename_images(edited_image_infos)
+        self._rename_images(edited_image_infos, index_only=True)
 
         # naming the design
         self.find_canva_home_icon_and_click(offset_x=1467, offset_y=58)

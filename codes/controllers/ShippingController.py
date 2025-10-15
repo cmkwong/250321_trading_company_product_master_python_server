@@ -1,10 +1,14 @@
 import math
 import itertools
+import pandas as pd
+import os
 
 from ..datas import boxes
-from ..utils import printModel, dicModel
+from ..utils import printModel, dicModel, timeModel, excelModel
+
 class ShippingController:
     def __init__(self):
+        self.PACKING_DOC_PATH = "../docs/packing"
         self.BOX_KG = 1.0
 
     def list_all_npr(self, data, r):
@@ -30,7 +34,7 @@ class ShippingController:
         """
         packing_results = []
 
-        for box in boxes.BoxDimsions:
+        for bi, box in enumerate(boxes.BoxDimsions):
             # list out all the combination
             for box_dim in self.list_all_npr(list(box.values()), 3):
                 L_c = math.floor(box_dim[0] / l)
@@ -48,10 +52,13 @@ class ShippingController:
 
                 if box_volume >= used_volume and used_volume > 0 and total_c >= min_pcs and (not max_pcs or total_c <= max_pcs):
                     data = {
-                        "box_dims": f"{box_dim[0]} x {box_dim[1]} x {box_dim[2]}",
-                        f"box_dim[0] / l": f"{box_dim[0]:.0f} / {l:.0f}",
-                        f"box_dim[1] / w": f"{box_dim[1]:.0f} / {w:.0f}",
-                        f"box_dim[2] / h": f"{box_dim[2]:.0f} / {h:.0f}",
+                        "box_index": bi,
+                        "box_dims[0]": box_dim[0],
+                        "box_dims[1]": box_dim[1],
+                        "box_dims[2]": box_dim[2],
+                        f"box_dim[0] / l": f"{box_dim[0]:.1f} / {l:.1f}",
+                        f"box_dim[1] / w": f"{box_dim[1]:.1f} / {w:.1f}",
+                        f"box_dim[2] / h": f"{box_dim[2]:.1f} / {h:.1f}",
                         "L_c": L_c,
                         "W_c": W_c,
                         "H_c": H_c,
@@ -64,7 +71,19 @@ class ShippingController:
                     # append the result
                     packing_results.append(data)
 
+        # sorting results
         sorted_packing_results = dicModel.sort_dict(packing_results, [('total_c', True), ('box_efficient', True)], weights=[0.7, 0.3])
         # printing pack results
-        for result in sorted_packing_results:
-            printModel.print_dict(result)
+        # for result in sorted_packing_results:
+        #     printModel.print_dict(result)
+
+        # writing into dataframe
+        df = pd.DataFrame(sorted_packing_results)
+
+        # output report table file
+        fileName = f"packing_{timeModel.getTimeS(outputFormat='%Y%m%d%H%M%S')}.xlsx"
+        excelModel.write_df_and_open(df, self.PACKING_DOC_PATH, fileName)
+
+
+
+

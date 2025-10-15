@@ -12,6 +12,7 @@ class FileController:
 
     def create_product_folder(self, folderName):
         productPath = os.path.join(config.PRODUCT_FOLDER_PATH, folderName)
+        fileModel.createDir(productPath, 'AMZ')
         fileModel.createDir(productPath, 'display')
         fileModel.createDir(productPath, 'description')
         fileModel.createDir(productPath, 'video')

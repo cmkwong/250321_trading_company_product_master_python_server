@@ -204,6 +204,7 @@ class CommandChecker:
         self.imageController.write_extracted_txt(params['product_index'], 'description')
         return self.COMMAND_CHECKED
 
+    # auto put the product images into canva
     @command_check(['bc'])
     @params_check({
         "product_index": ['', str],
@@ -213,6 +214,7 @@ class CommandChecker:
         self.pyautoController.product_into_canva_attempts(params['product_index'], params['imagesType'])
         return self.COMMAND_CHECKED
 
+    # auto put the product images into canva
     @command_check(['bcs'])
     @params_check({
         "product_indexs": ['', list]
@@ -231,7 +233,7 @@ class CommandChecker:
     @command_check()
     def zip(self):
         product_ids = [os.path.join(config.PRODUCT_FOLDER_PATH, t.strip()) for t in fileModel.read_text(r'./docs', 'zip_to_agent_product_id.txt').split('\n') if len(t.strip()) > 0]
-        fileModel.zip_folders_combined(product_ids, os.path.join(config.PRODUCT_FOLDER_PATH, f"PetProductImages_{timeModel.get_time_str('%Y%m%d')}.zip"))
+        fileModel.zip_folders_combined(product_ids, os.path.join(config.PRODUCT_FOLDER_PATH, f"PetProductImages_{timeModel.getTimeS(outputFormat='%Y%m%d')}.zip"))
         return self.COMMAND_CHECKED
 
     @command_check()
