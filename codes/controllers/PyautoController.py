@@ -6,6 +6,7 @@ from datetime import datetime, timedelta
 from typing import Optional, Union, Tuple
 
 from codes.controllers.PyputController import PyputController
+from codes.controllers.ImageController import ImageController
 from codes.utils import fileModel, imgModel
 from codes import config
 
@@ -13,6 +14,7 @@ class PyautoController:
 
     def __init__(self):
         self.pyputController = PyputController()
+        self.imageController = ImageController()
         self.CONVA_ICON_PATH = os.path.join(config.AUTO_IMAGE, 'canva')
 
     # ctrl + v to paste the text
@@ -399,9 +401,11 @@ class PyautoController:
         product_path = os.path.join(config.PRODUCT_FOLDER_PATH, product_index, imagesType)
         product_images = fileModel.getFileList(pathDir=product_path)
         image_infos = {}
-        for product_image in product_images:
-            _, _, i, size = product_image.split('.')[0].split('_')
-            width, height = size.split('x')
+        for i, product_image in enumerate(product_images):
+            width, height = self.imageController.gettingImageSize(product_path, product_image)
+            # _, _, i, size = product_image.split('.')[0].split('_')
+            # width, height = size.split('x')
+
             path = os.path.join(product_path, product_image)
             image_infos[int(i)] = {'width': int(width), 'height': int(height), 'path': path, 'name': product_image.split('.')[0]}
         # sorted the image infos in asc order

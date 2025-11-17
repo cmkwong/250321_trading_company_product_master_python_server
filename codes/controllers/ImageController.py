@@ -3,6 +3,7 @@ import os
 
 import requests
 import base64
+from PIL import Image
 from pathlib import Path
 from codes import config
 from codes.utils import fileModel
@@ -85,3 +86,15 @@ class ImageController:
         # init the OCR model
         ocr = PaddleOCR(use_angle_cls=True, lang='ch')
 
+    def gettingImageSize(self, folderPath, fileName):
+        try:
+            image_path = os.path.join(folderPath, fileName)
+            with Image.open(image_path) as img:
+                width, height = img.size
+                print(f"Image width: {width} pixels")
+                print(f"Image height: {height} pixels")
+        except FileNotFoundError:
+            print(f"Error: Image file not found at '{image_path}'")
+        except Exception as e:
+            print(f"An error occurred: {e}")
+        return width, height

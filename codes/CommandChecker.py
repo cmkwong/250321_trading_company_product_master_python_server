@@ -14,6 +14,7 @@ from codes.controllers.WebController import WebController
 from codes.controllers.ImageController import ImageController
 from codes.controllers.PyautoController import PyautoController
 from codes.controllers.ShippingController import ShippingController
+from codes.controllers.PriceController import PriceController
 
 class CommandChecker:
 
@@ -27,6 +28,7 @@ class CommandChecker:
         self.imageController = ImageController()
         self.pyautoController = PyautoController()
         self.shippingController = ShippingController()
+        self.priceController = PriceController()
 
         # constants
         self.COMMAND_CHECKED = 'CHECKED'
@@ -247,5 +249,16 @@ class CommandChecker:
     })
     def packing(self, **params):
         self.shippingController.findPacking(**params)
+        return self.COMMAND_CHECKED
+
+    @command_check()
+    @params_check({
+        "qtyString": ['10, 100, 500, 1000', str],
+        "cost": ["", float],
+        "profit_max": ['', float, 'In %'],
+        "profit_min": ['', float, 'In %']
+    })
+    def price(self, **params):
+        self.priceController.price_range(**params)
         return self.COMMAND_CHECKED
 
