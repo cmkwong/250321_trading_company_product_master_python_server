@@ -329,7 +329,7 @@ class CanvaAutoController:
             time.sleep(0.2)
         return True
 
-    def product_into_canva(self, design_name, image_infos) -> dict:
+    def product_into_canva(self, design_name, image_infos, renameImage=False) -> dict:
         edited_image_infos = {}
         # # first image of width and height and create the design
         width, height = (
@@ -364,8 +364,9 @@ class CanvaAutoController:
             edited_image_infos[key] = image_infos.pop(key)
         # setting each of image to background
         self._set_images_as_background(edited_image_infos)
-        # product_SEO_keywords images
-        self._rename_images(edited_image_infos, index_only=True)
+        # product_keywords images
+        if renameImage:
+            self._rename_images(edited_image_infos, index_only=True)
 
         # naming the design
         self.find_canva_home_icon_and_click(offset_x=1467, offset_y=58)
@@ -373,7 +374,9 @@ class CanvaAutoController:
         x, y = self.find_canva_home_icon_and_click(offset_x=943, offset_y=600)
         return image_infos
 
-    def product_into_canva_attempts(self, product_index, imagesType, attempts=5):
+    def product_into_canva_attempts(
+        self, product_index, imagesType, renameImage, attempts=5
+    ):
         product_path = os.path.join(
             config.PRODUCT_FOLDER_PATH, product_index, imagesType
         )
@@ -402,7 +405,9 @@ class CanvaAutoController:
                 design_name = f"{imagesType}_{product_index}_{i}"
             else:
                 design_name = f"{imagesType}_{product_index}"
-            image_infos = self.product_into_canva(design_name, image_infos)
+            image_infos = self.product_into_canva(
+                design_name, image_infos, renameImage=renameImage
+            )
             # every time finish, zip the window
             self.find_canva_home_icon_and_click(1723, 5)
             if len(image_infos) == 0:

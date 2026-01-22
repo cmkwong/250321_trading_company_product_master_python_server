@@ -211,23 +211,29 @@ class CommandChecker:
 
     # auto put the product images into canva
     @command_check(["bc"])
-    @params_check({"product_index": ["", str], "imagesType": ["", str]})
+    @params_check(
+        {
+            "product_index": ["", str],
+            "imagesType": ["", str],
+            "renameImage": [False, bool],
+        },
+    )
     def buildcanva(self, **params):
         self.canvaAutoController.product_into_canva_attempts(
-            params["product_index"], params["imagesType"]
+            params["product_index"], params["imagesType"], params["renameImage"]
         )
         return self.COMMAND_CHECKED
 
     # auto put the product images into canva
     @command_check(["bcs"])
-    @params_check({"product_indexs": ["", list]})
+    @params_check({"product_indexs": ["", list], "renameImage": [False, bool]})
     def buildcanvas(self, **params):
         for product_index in params["product_indexs"]:
             self.canvaAutoController.product_into_canva_attempts(
-                product_index, "display"
+                product_index, "display", params["renameImage"]
             )
             self.canvaAutoController.product_into_canva_attempts(
-                product_index, "description"
+                product_index, "description", params["renameImage"]
             )
         return self.COMMAND_CHECKED
 
