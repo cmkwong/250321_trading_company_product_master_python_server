@@ -3,7 +3,6 @@ import sys
 
 from functools import wraps
 import pandas as pd
-from codes import config
 from codes.utils import paramModel, timeModel, fileModel, inputModel
 from codes.utils.paramModel import command_check, params_check
 from codes.controllers.PyputController import PyputController
@@ -15,7 +14,7 @@ from codes.controllers.ImageController import ImageController
 from codes.controllers.CanvaAutoController import CanvaAutoController
 from codes.controllers.ShippingController import ShippingController
 from codes.controllers.PriceController import PriceController
-
+from codes.controllers.AlibabaController import AlibabaController
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -33,6 +32,7 @@ class CommandChecker:
         self.canvaAutoController = CanvaAutoController()
         self.shippingController = ShippingController()
         self.priceController = PriceController()
+        self.alibabaController = AlibabaController()
 
         # constants
         self.COMMAND_CHECKED = "CHECKED"
@@ -194,7 +194,7 @@ class CommandChecker:
     @command_check(["t1688"])
     @params_check({"product_id": ["", str], "version": [2, int]})
     def download_1688_src_text(self, **params):
-        # html = fileModel.read_text(config.DOCS, "html.txt")
+        # html = fileModel.read_text(os.getenv("DOCS"), "html.txt")
         self.webController.download_1688_images_from_html(
             params["product_id"], params["version"]
         )
@@ -292,4 +292,14 @@ class CommandChecker:
     )
     def price(self, **params):
         self.priceController.price_range(**params)
+        return self.COMMAND_CHECKED
+
+    @command_check(["ris"])
+    @params_check(
+        {
+            "product_folder_name": ["", str],
+        }
+    )
+    def rename_images_by_similarity(self, **params):
+        self.alibabaController.rename_edited_folder_image_by_similarity(**params)
         return self.COMMAND_CHECKED

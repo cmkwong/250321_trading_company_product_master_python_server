@@ -8,7 +8,6 @@ from typing import Optional, Union, Tuple
 from codes.controllers.PyputController import PyputController
 from codes.controllers.ImageController import ImageController
 from codes.utils import fileModel, imgModel
-from codes import config
 
 from dotenv import load_dotenv
 
