@@ -17,15 +17,18 @@ import requests
 from urllib.parse import urlparse
 from PIL import Image
 
-from codes import config
 from codes.utils import fileModel
 from codes.controllers.CanvaAutoController import CanvaAutoController
+
+from dotenv import load_dotenv
+
+load_dotenv()
 
 
 class WebController:
     def __init__(self):
         executable_path = os.path.join(
-            config.CHROME_WEB_DRIVER_PATH, "chromedriver.exe"
+            os.getenv("CHROME_WEB_DRIVER_PATH"), "chromedriver.exe"
         )
 
         self.service = Service(executable_path=executable_path)
@@ -34,7 +37,7 @@ class WebController:
         self.is_quit = True
 
         # controller
-        self.PATTERN_1688_PATH = os.path.join(config.AUTO_IMAGE, "1688")
+        self.PATTERN_1688_PATH = os.path.join(os.getenv("AUTO_IMAGE"), "1688")
         self.canvaAutoController = CanvaAutoController()
 
     def get_image_size(self, image_path):
@@ -255,7 +258,7 @@ class WebController:
         )
         # getting html text
         website_html_txt = pyperclip.paste()
-        # website_html_txt = fileModel.read_text(config.DOCS, "html.txt")
+        # website_html_txt = fileModel.read_text(os.getenv("DOCS"), "html.txt")
         soup = BeautifulSoup(website_html_txt)
 
         # getting the shadow-root html
@@ -350,14 +353,14 @@ class WebController:
             self.download_video(
                 url,
                 os.path.join(
-                    config.PRODUCT_FOLDER_PATH, product_id, src_type, filename
+                    os.getenv("PRODUCT_FOLDER_PATH"), product_id, src_type, filename
                 ),
             )
         else:
             self.download_image(
                 url,
                 os.path.join(
-                    config.PRODUCT_FOLDER_PATH, product_id, src_type, filename
+                    os.getenv("PRODUCT_FOLDER_PATH"), product_id, src_type, filename
                 ),
                 hard_ext,
             )

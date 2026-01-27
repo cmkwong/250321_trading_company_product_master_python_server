@@ -10,13 +10,17 @@ from codes.controllers.ImageController import ImageController
 from codes.utils import fileModel, imgModel
 from codes import config
 
+from dotenv import load_dotenv
+
+load_dotenv()
+
 
 class CanvaAutoController:
 
     def __init__(self):
         self.pyputController = PyputController()
         self.imageController = ImageController()
-        self.CONVA_ICON_PATH = os.path.join(config.AUTO_IMAGE, "canva")
+        self.CONVA_ICON_PATH = os.path.join(os.getenv("AUTO_IMAGE"), "canva")
 
     # ctrl + v to paste the text
     def paste_text(self, text):
@@ -378,7 +382,7 @@ class CanvaAutoController:
         self, product_index, imagesType, renameImage, attempts=5
     ):
         product_path = os.path.join(
-            config.PRODUCT_FOLDER_PATH, product_index, imagesType
+            os.getenv("PRODUCT_FOLDER_PATH"), product_index, imagesType
         )
         product_images = fileModel.getFileList(pathDir=product_path)
         image_infos = {}

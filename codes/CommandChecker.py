@@ -16,6 +16,10 @@ from codes.controllers.CanvaAutoController import CanvaAutoController
 from codes.controllers.ShippingController import ShippingController
 from codes.controllers.PriceController import PriceController
 
+from dotenv import load_dotenv
+
+load_dotenv()
+
 
 class CommandChecker:
 
@@ -69,22 +73,24 @@ class CommandChecker:
         secondCoord = self.pyputController.get_pos_by_leftClick()
         # cap screen
         filename = self.capScreenController.cap(
-            firstCoord, secondCoord, path=config.IMAGE_TO_TEXT_PATH
+            firstCoord, secondCoord, path=os.getenv("IMAGE_TO_TEXT_PATH")
         )
         # transfer into txt
         txt = self.chatController.image_to_txt(filename)
-        fileModel.write_txt(config.IMAGE_TO_TEXT_PATH, "transfer.txt", f"{txt}\n", "a")
+        fileModel.write_txt(
+            os.getenv("IMAGE_TO_TEXT_PATH"), "transfer.txt", f"{txt}\n", "a"
+        )
         return self.COMMAND_CHECKED
 
     # translate the text from translate.txt file
     @command_check(["tl"])
     def translate_text_file(self):
-        txt = fileModel.read_text(config.IMAGE_TO_TEXT_PATH, "transfer.txt")
+        txt = fileModel.read_text(os.getenv("IMAGE_TO_TEXT_PATH"), "transfer.txt")
         translated_txt = self.chatController.translate_content(
             txt, "Chinese", "English", "Simple Professional"
         )
         fileModel.write_txt(
-            config.IMAGE_TO_TEXT_PATH, "result.txt", f"{translated_txt}\n", "a"
+            os.getenv("IMAGE_TO_TEXT_PATH"), "result.txt", f"{translated_txt}\n", "a"
         )
         return self.COMMAND_CHECKED
 
@@ -125,7 +131,7 @@ class CommandChecker:
         secondCoord = self.pyputController.get_pos_by_leftClick()
         # cap screen
         filename = self.capScreenController.cap(
-            firstCoord, secondCoord, path=config.IMAGE_TO_TEXT_PATH
+            firstCoord, secondCoord, path=os.getenv("IMAGE_TO_TEXT_PATH")
         )
         # transfer into txt
         txt = self.chatController.image_to_txt(filename)
@@ -133,7 +139,7 @@ class CommandChecker:
             txt, "Chinese", "English", "Simple Professional"
         )
         fileModel.write_txt(
-            config.IMAGE_TO_TEXT_PATH, "result.txt", f"{translated_txt}\n", "a"
+            os.getenv("IMAGE_TO_TEXT_PATH"), "result.txt", f"{translated_txt}\n", "a"
         )
         return self.COMMAND_CHECKED
 
@@ -163,7 +169,7 @@ class CommandChecker:
     def write_email(self, **params):
         email_txt = self.chatController.write_email(**params)
         fileModel.write_txt(
-            config.IMAGE_TO_TEXT_PATH, "result.txt", f"----\n{email_txt}\n", "a"
+            os.getenv("IMAGE_TO_TEXT_PATH"), "result.txt", f"----\n{email_txt}\n", "a"
         )
         print(email_txt)
         return self.COMMAND_CHECKED
@@ -245,7 +251,7 @@ class CommandChecker:
     @command_check()
     def zip(self):
         product_ids = [
-            os.path.join(config.PRODUCT_FOLDER_PATH, t.strip())
+            os.path.join(os.getenv("PRODUCT_FOLDER_PATH"), t.strip())
             for t in fileModel.read_text(
                 r"./docs", "zip_to_agent_product_id.txt"
             ).split("\n")
@@ -254,7 +260,7 @@ class CommandChecker:
         fileModel.zip_folders_combined(
             product_ids,
             os.path.join(
-                config.PRODUCT_FOLDER_PATH,
+                os.getenv("PRODUCT_FOLDER_PATH"),
                 f"PetProductImages_{timeModel.getTimeS(outputFormat='%Y%m%d')}.zip",
             ),
         )

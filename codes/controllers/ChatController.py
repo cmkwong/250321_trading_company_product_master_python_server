@@ -1,5 +1,3 @@
-from codes import config
-
 from openai import OpenAI
 
 import pandas as pd
@@ -15,14 +13,22 @@ import os
 
 import pytesseract
 import pyperclip
+
+from dotenv import load_dotenv
+
+load_dotenv()
+
+
 class ChatController:
 
     def __init__(self):
-        self.IMAGE_FOR_TXT_PATH = './docs/imageForTxt'
+        self.IMAGE_FOR_TXT_PATH = "./docs/imageForTxt"
         # create the client for Deepseek
-        self.client = OpenAI(api_key=config.DEEPSEEK_API_KEY, base_url="https://api.deepseek.com")
+        self.client = OpenAI(
+            api_key=os.getenv("DEEPSEEK_API_KEY"), base_url="https://api.deepseek.com"
+        )
         # for image parse into text function
-        pytesseract.pytesseract.tesseract_cmd = config.TESSERACT_EXE_PATH
+        pytesseract.pytesseract.tesseract_cmd = os.getenv("TESSERACT_EXE_PATH")
 
         # message history
         self.messages = []
@@ -37,7 +43,7 @@ class ChatController:
             messages=[
                 {"role": "user", "content": question},
             ],
-            stream=False
+            stream=False,
         )
         return response
 
@@ -45,9 +51,7 @@ class ChatController:
         if isinstance(user_message, str):
             self.messages.append({"role": "user", "content": user_message})
         response = self.client.chat.completions.create(
-            model="deepseek-chat",
-            messages=self.messages,
-            stream=False
+            model="deepseek-chat", messages=self.messages, stream=False
         )
         system_message = response.choices[0].message.content
         self.messages.append({"role": "system", "content": system_message})
@@ -60,7 +64,7 @@ class ChatController:
         return response.choices[0].message.content
 
     def write_email(self, emailNote, toT):
-        points_txt = '\n'.join([f"{i+1}. {p}" for i, p in enumerate(emailNote)])
+        points_txt = "\n".join([f"{i+1}. {p}" for i, p in enumerate(emailNote)])
         question = f"Help me write an {toT} email and please notice on below points: \n{points_txt}"
         response = self.get_simple_response(question)
         email_txt = response.choices[0].message.content
@@ -72,13 +76,13 @@ class ChatController:
         question = f"This is content '{content}'. Please {action} this content"
         response = self.get_simple_response(question)
         # print(response.choices[0].message.content)
-        res_txt = ''
-        for k in response.choices[0].message.content.split('\n')[2:-2]:
-            k = re.sub(r'[\d]+\. ', '', k)
-            k = re.sub(r'\*', '', k)
+        res_txt = ""
+        for k in response.choices[0].message.content.split("\n")[2:-2]:
+            k = re.sub(r"[\d]+\. ", "", k)
+            k = re.sub(r"\*", "", k)
             k = k.strip()
             res_txt += f"{k}\n"
-        return  res_txt
+        return res_txt
 
     # translate the content
     def translate_content(self, content, fromT, toT, tone):
@@ -122,7 +126,15 @@ class ChatController:
                     {seo_txt}
             """
         response = self.get_simple_response(question)
-        product_name = response.choices[0].message.content.replace(',', ' ').replace('-', ' ').replace('|', ' ').replace('–', ' ').replace('  ', ' ').replace('  ', ' ')
+        product_name = (
+            response.choices[0]
+            .message.content.replace(",", " ")
+            .replace("-", " ")
+            .replace("|", " ")
+            .replace("–", " ")
+            .replace("  ", " ")
+            .replace("  ", " ")
+        )
         pyperclip.copy(product_name)
         print(product_name)
         return product_name
@@ -131,32 +143,31 @@ class ChatController:
     def generate_product_keywords(self, content):
         question = f"This is product name '{content}'. Please give me this product propular, distinct and different key words based on popular SEO"
         response = self.get_simple_response(question)
-        keywords = ''
-        for k in response.choices[0].message.content.split('\n')[2:-2]:
-            k = re.sub(r'[\d]+\. ', '', k)
-            k = re.sub(r'\*', '', k)
+        keywords = ""
+        for k in response.choices[0].message.content.split("\n")[2:-2]:
+            k = re.sub(r"[\d]+\. ", "", k)
+            k = re.sub(r"\*", "", k)
             k = k.strip()
-            keywords += k + '\n'
+            keywords += k + "\n"
         return keywords
 
     # generate product description base on product name
     def generate_product_description(self, content, tone):
         question = f"This is product name: '{content}'. \nCould you please give us {tone} description. "
         response = self.get_simple_response(question)
-        description = response.choices[0].message.content.replace('**', '')
+        description = response.choices[0].message.content.replace("**", "")
         pyperclip.copy(description)
         return description
 
     # transfer image into text
-    def image_to_txt(self, filename, lang='chi_sim'):
-        txt = pytesseract.image_to_string(os.path.join(self.IMAGE_FOR_TXT_PATH, filename), lang=lang).replace('\n', '').replace(' ', '')
+    def image_to_txt(self, filename, lang="chi_sim"):
+        txt = (
+            pytesseract.image_to_string(
+                os.path.join(self.IMAGE_FOR_TXT_PATH, filename), lang=lang
+            )
+            .replace("\n", "")
+            .replace(" ", "")
+        )
         pyperclip.copy(txt)
         print(txt)
         return txt
-
-
-
-
-
-
-
