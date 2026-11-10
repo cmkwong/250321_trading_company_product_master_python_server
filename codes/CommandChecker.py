@@ -15,6 +15,7 @@ from codes.controllers.CanvaAutoController import CanvaAutoController
 from codes.controllers.ShippingController import ShippingController
 from codes.controllers.PriceController import PriceController
 from codes.controllers.AlibabaController import AlibabaController
+from codes.controllers.OllamaController import OllamaController
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -33,6 +34,7 @@ class CommandChecker:
         self.shippingController = ShippingController()
         self.priceController = PriceController()
         self.alibabaController = AlibabaController()
+        self.ollamaController = OllamaController()
 
         # constants
         self.COMMAND_CHECKED = "CHECKED"
@@ -62,6 +64,19 @@ class CommandChecker:
         response = self.chatController.get_simple_response(**params)
         system_message = response.choices[0].message.content
         print(system_message)
+        return self.COMMAND_CHECKED
+
+    # interactive chat session with the local ollama model
+    @command_check(["ollachat"])
+    def ollama_chat(self):
+        self.ollamaController.clear_chat()
+        print("Chatting with Ollama. Type 'q' to quit.")
+        while True:
+            question = input("You: ")
+            if question.strip().lower() in ("q", "quit", ""):
+                break
+            answer = self.ollamaController.get_system_message(question)
+            print(f"Ollama: {answer}")
         return self.COMMAND_CHECKED
 
     # capture the text and paste it onto translate.txt
