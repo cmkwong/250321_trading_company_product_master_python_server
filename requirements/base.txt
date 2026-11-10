@@ -1,0 +1,34 @@
+# Web framework + REST API
+Django==5.2
+djangorestframework>=3.15,<3.17
+
+# Configuration
+python-dotenv==1.2.1
+
+# Data / spreadsheets
+pandas==2.2.3
+numpy==1.26.4
+openpyxl==3.1.5
+XlsxWriter==3.2.3
+
+# LLM / AI
+openai==1.77.0
+ollama==0.6.3
+
+# HTTP / scraping
+requests==2.32.3
+beautifulsoup4==4.13.4
+fake-useragent==2.2.0
+selenium==4.32.0
+
+# Imaging / OCR
+Pillow==11.1.0
+opencv-python==4.11.0.86
+scikit-image==0.25.2
+pytesseract==0.3.13
+
+# Misc
+tqdm==4.67.1
+matplotlib==3.10.0
+python-dateutil==2.9.0.post0
+pytz==2024.1

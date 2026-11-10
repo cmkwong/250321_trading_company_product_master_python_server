@@ -1,0 +1,11 @@
+-r base.txt
+
+# Desktop automation (Windows, requires an unlocked interactive session)
+PyAutoGUI==0.9.54
+pynput==1.8.1
+pyperclip==1.9.0
+pywin32==310
+paddleocr==2.10.0
+
+# Interactive CLI prompting
+prompt_toolkit==3.0.51

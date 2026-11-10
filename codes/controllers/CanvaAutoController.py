@@ -6,7 +6,7 @@ from datetime import datetime, timedelta
 from typing import Optional, Union, Tuple
 
 from codes.controllers.PyputController import PyputController
-from codes.controllers.ImageController import ImageController
+from apps.core.services.image_service import ImageController
 from codes.utils import fileModel, imgModel
 
 from dotenv import load_dotenv

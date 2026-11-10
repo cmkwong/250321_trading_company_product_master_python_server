@@ -1,24 +1,18 @@
 import os
-import sys
 
-from functools import wraps
-import pandas as pd
-from codes.utils import paramModel, timeModel, fileModel, inputModel
-from codes.utils.paramModel import command_check, params_check
+from apps.core.services.chat_service import ChatController
+from apps.core.services.price_service import PriceController
+from apps.core.services.ollama_service import OllamaController
+from apps.core.services.file_service import FileController
+from apps.core.services.alibaba_service import AlibabaController
+from apps.core.services.shipping_service import ShippingController
+from apps.core.services.image_service import ImageController
 from codes.controllers.PyputController import PyputController
 from codes.controllers.CapScreenController import CapScreenController
-from codes.controllers.ChatController import ChatController
-from codes.controllers.FileController import FileController
 from codes.controllers.WebController import WebController
-from codes.controllers.ImageController import ImageController
 from codes.controllers.CanvaAutoController import CanvaAutoController
-from codes.controllers.ShippingController import ShippingController
-from codes.controllers.PriceController import PriceController
-from codes.controllers.AlibabaController import AlibabaController
-from codes.controllers.OllamaController import OllamaController
-from dotenv import load_dotenv
-
-load_dotenv()
+from codes.utils import paramModel, timeModel, fileModel, inputModel, printModel
+from codes.utils.paramModel import command_check, params_check
 
 
 class CommandChecker:
@@ -92,6 +86,7 @@ class CommandChecker:
         )
         # transfer into txt
         txt = self.chatController.image_to_txt(filename)
+        print(txt)
         fileModel.write_txt(
             os.getenv("IMAGE_TO_TEXT_PATH"), "transfer.txt", f"{txt}\n", "a"
         )
@@ -104,6 +99,7 @@ class CommandChecker:
         translated_txt = self.chatController.translate_content(
             txt, "Chinese", "English", "Simple Professional"
         )
+        print(translated_txt)
         fileModel.write_txt(
             os.getenv("IMAGE_TO_TEXT_PATH"), "result.txt", f"{translated_txt}\n", "a"
         )
@@ -125,6 +121,7 @@ class CommandChecker:
         translated_txt = self.chatController.translate_product_name(
             params["content"], params["fromT"], params["toT"], params["tone"], seo_txt
         )
+        print(translated_txt)
         return self.COMMAND_CHECKED
 
     # simple translate
@@ -135,6 +132,7 @@ class CommandChecker:
         translated_txt = self.chatController.translate_content(
             txt, "Chinese", "English", "Simple Professional"
         )
+        print(translated_txt)
         return self.COMMAND_CHECKED
 
     # capture and translate the text
@@ -150,9 +148,11 @@ class CommandChecker:
         )
         # transfer into txt
         txt = self.chatController.image_to_txt(filename)
+        print(txt)
         translated_txt = self.chatController.translate_content(
             txt, "Chinese", "English", "Simple Professional"
         )
+        print(translated_txt)
         fileModel.write_txt(
             os.getenv("IMAGE_TO_TEXT_PATH"), "result.txt", f"{translated_txt}\n", "a"
         )
@@ -306,7 +306,8 @@ class CommandChecker:
         }
     )
     def price(self, **params):
-        self.priceController.price_range(**params)
+        data = self.priceController.price_range(**params)
+        printModel.print_dict(data)
         return self.COMMAND_CHECKED
 
     @command_check(["ris"])
