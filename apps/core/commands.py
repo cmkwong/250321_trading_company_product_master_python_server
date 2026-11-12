@@ -35,8 +35,14 @@ class CommandSpec:
 COMMANDS: Dict[str, CommandSpec] = {}
 
 
-def command(name: Optional[str] = None, aliases: tuple = (), params: Optional[dict] = None, kind: str = KIND_SYNC):
+def command(
+    name: Optional[str] = None,
+    aliases: tuple = (),
+    params: Optional[dict] = None,
+    kind: str = KIND_SYNC,
+):
     """Decorator that registers the wrapped callable as a command."""
+
     def decorator(func):
         cmd_name = name or func.__name__
         COMMANDS[cmd_name] = CommandSpec(

@@ -10,6 +10,11 @@ from apps.core.services.chat_service import ChatController
 from apps.core.services.price_service import PriceController
 
 
+# """
+# This is equivalent to:
+# decorator = registry.command(name="price", params={...}, kind=registry.KIND_SYNC)  # step A
+# price = decorator(price)
+# """
 @registry.command(
     name="price",
     params={
@@ -37,7 +42,9 @@ def price(qtyString="10, 100, 500, 1000", cost=0.0, profit_max=0.0, profit_min=0
     },
     kind=registry.KIND_SYNC,
 )
-def translate(content="", fromT="Chinese", toT="English", tone="Simple and Professional"):
+def translate(
+    content="", fromT="Chinese", toT="English", tone="Simple and Professional"
+):
     return ChatController().translate_content(content, fromT, toT, tone)
 
 

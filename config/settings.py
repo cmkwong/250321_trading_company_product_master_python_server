@@ -73,7 +73,9 @@ DATABASES = {
 }
 
 AUTH_PASSWORD_VALIDATORS = [
-    {"NAME": "django.contrib.auth.password_validation.UserAttributeSimilarityValidator"},
+    {
+        "NAME": "django.contrib.auth.password_validation.UserAttributeSimilarityValidator"
+    },
     {"NAME": "django.contrib.auth.password_validation.MinimumLengthValidator"},
     {"NAME": "django.contrib.auth.password_validation.CommonPasswordValidator"},
     {"NAME": "django.contrib.auth.password_validation.NumericPasswordValidator"},
@@ -83,6 +85,7 @@ LANGUAGE_CODE = "en-us"
 TIME_ZONE = "Asia/Hong_Kong"
 USE_I18N = True
 USE_TZ = True
+# APPEND_SLASH = False
 
 STATIC_URL = "static/"
 

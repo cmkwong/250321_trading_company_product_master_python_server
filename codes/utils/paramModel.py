@@ -20,16 +20,19 @@ def decodeParam(input_data, dataType):
         required_input_data = input_data
     elif dataType == bool:
         required_input_data = False
-        if input_data.upper() == 'TRUE':
+        if input_data.upper() == "TRUE":
             required_input_data = True
     # as space/empty cannot int / float the transform
-    elif dataType in (int, float) and (input_data == '' or input_data.isspace()):
+    elif dataType in (int, float) and (input_data == "" or input_data.isspace()):
         required_input_data = 0
     elif type(input_data) != dataType:
-        required_input_data = dataType(input_data)  # __new__, refer: https://www.pythontutorial.net/python-oop/python-__new__/
+        required_input_data = dataType(
+            input_data
+        )  # __new__, refer: https://www.pythontutorial.net/python-oop/python-__new__/
     else:
         required_input_data = input_data
     return required_input_data
+
 
 # convert dictionary parameter into raw string
 def encodeParam(param):
@@ -48,6 +51,7 @@ def encodeParam(param):
         encoded_param = str(param)
     return encoded_param
 
+
 # ask tuple and list
 def _ask_batch(paramName, paramValue, dataType):
     stop = False
@@ -56,12 +60,15 @@ def _ask_batch(paramName, paramValue, dataType):
     print("Type \q to finish. ")
     while not stop:
         # setup default value
-        defaultValue = ''
+        defaultValue = ""
         if init_count < len(paramValue):
             defaultValue = paramValue[init_count]
-        ind = prompt(f"{paramName}({dataType.__name__}) - {init_count + 1}:", default=f"{defaultValue}")
+        ind = prompt(
+            f"{paramName}({dataType.__name__}) - {init_count + 1}:",
+            default=f"{defaultValue}",
+        )
         # check if input finished
-        if ind == r'\q':
+        if ind == r"\q":
             stop = True
         else:
             input_data.append(ind)
@@ -70,6 +77,7 @@ def _ask_batch(paramName, paramValue, dataType):
         return input_data
     elif dataType == tuple:
         return tuple(input_data)
+
 
 # ask dict
 def _ask_dic(paramName, paramValue, dataType):
@@ -80,22 +88,28 @@ def _ask_dic(paramName, paramValue, dataType):
     dic_values = list(paramValue.values())
     while not stop:
         # setup default value
-        defaultKey = ''
-        defaultValue = ''
+        defaultKey = ""
+        defaultValue = ""
         if init_count < len(paramValue):
             defaultKey = dic_keys[init_count]
             defaultValue = dic_values[init_count]
-        ind_key = prompt(f"{paramName}({dataType.__name__}) - key: ", default=f"{defaultKey}")
-        if ind_key != r'\q':
-            ind_value = prompt(f"{paramName}({dataType.__name__}) - {ind_key} of value: ", default=f"{defaultValue}")
+        ind_key = prompt(
+            f"{paramName}({dataType.__name__}) - key: ", default=f"{defaultKey}"
+        )
+        if ind_key != r"\q":
+            ind_value = prompt(
+                f"{paramName}({dataType.__name__}) - {ind_key} of value: ",
+                default=f"{defaultValue}",
+            )
             input_data[ind_key] = ind_value
         else:
             stop = True
         init_count += 1
     return input_data
 
+
 # user input the param
-def input_param(paramName, paramValue, dataType, remark=''):
+def input_param(paramName, paramValue, dataType, remark=""):
     # ask use input parameter and allow user to modify the default parameter
     if remark:
         print(f"Remark: {remark}")
@@ -104,11 +118,14 @@ def input_param(paramName, paramValue, dataType, remark=''):
     elif dataType == dict:
         input_data = _ask_dic(paramName, paramValue, dataType)
     else:
-        input_data = prompt(f"{paramName}({dataType.__name__}): ", default=f"{paramValue}")
+        input_data = prompt(
+            f"{paramName}({dataType.__name__}): ", default=f"{paramValue}"
+        )
     # if no input, then assign default parameter
     if len(input_data) == 0:
         input_data = paramValue
     return input_data
+
 
 def ask_param_fn(class_object, **overwrote_paramFormat):
     """
@@ -117,7 +134,8 @@ def ask_param_fn(class_object, **overwrote_paramFormat):
     :return: obj, dict of param
     """
     # if it is none
-    if not overwrote_paramFormat: overwrote_paramFormat = {}
+    if not overwrote_paramFormat:
+        overwrote_paramFormat = {}
     # params details from object
     signatures = inspect.signature(class_object)
     paramFormat = {}
@@ -131,12 +149,13 @@ def ask_param_fn(class_object, **overwrote_paramFormat):
             else:
                 # has no default parameter
                 if sig.default == sig.empty:
-                    paramFormat[sig.name] = ['', sig.annotation]
+                    paramFormat[sig.name] = ["", sig.annotation]
                 else:
                     paramFormat[sig.name] = [sig.default, sig.annotation]
     # ask user to input the param
     param = ask_param(paramFormat)
     return class_object, param
+
 
 def ask_param(paramFormat):
     """
@@ -151,7 +170,7 @@ def ask_param(paramFormat):
             param, dataType, remark = paramData
         else:
             param, dataType = paramData
-            remark = ''
+            remark = ""
         # encode the param (for user input)
         # param = encodeParam(param)
         # asking params
@@ -161,10 +180,11 @@ def ask_param(paramFormat):
         params[name] = decode_data
     return params
 
+
 def command_check(commands: list = None):
     def decorator(func):
         def command_check_wrapper(self, **params):
-            ans = getattr(self, 'ans')
+            ans = getattr(self, "ans")
             ans = ans[1:]  # it must start with '-'
             # function-name + defined command-sets
             if commands:
@@ -175,17 +195,18 @@ def command_check(commands: list = None):
             # check if command being matched
             # print("commandMatches: ", commandMatches)
             if ans not in commandMatches:
-                setattr(self, 'COMMAND_HIT', False)
+                setattr(self, "COMMAND_HIT", False)
                 return False
             else:
                 # print("commandMatches hit: ", commandMatches)
-                setattr(self, 'COMMAND_HIT', True)
-                setattr(self, 'ans', None)
+                setattr(self, "COMMAND_HIT", True)
+                setattr(self, "ans", None)
                 return func(self, **params)
 
         return command_check_wrapper
 
     return decorator
+
 
 def params_check(default_params: dict = None):
     def decorator(func):
@@ -193,10 +214,11 @@ def params_check(default_params: dict = None):
             params = {}
             if self.COMMAND_HIT:
                 params = ask_param(default_params)
-                setattr(self, 'COMMAND_HIT', False)
+                setattr(self, "COMMAND_HIT", False)
                 return func(self, **params)
             else:
                 return func(self, **params)
+
         # assign the target function for upper wrapper
         params_check_wrapper.__name__ = func.__name__
         return params_check_wrapper

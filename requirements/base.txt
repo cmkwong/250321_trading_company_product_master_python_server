@@ -32,3 +32,8 @@ tqdm==4.67.1
 matplotlib==3.10.0
 python-dateutil==2.9.0.post0
 pytz==2024.1
+
+# LLM / AI (LangChain agent + local Ollama)
+langchain==1.4.10
+langchain-core==1.7.7
+langchain-ollama==1.1.0
