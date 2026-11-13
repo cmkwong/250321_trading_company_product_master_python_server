@@ -59,9 +59,8 @@ class NodeServiceAccount(models.Model):
     ``token`` until ``token_expires_at``.
     """
 
-    first_name = models.CharField(max_length=100, default="")
-    last_name = models.CharField(max_length=100, default="")
-    email = models.EmailField(unique=True)
+    name = models.CharField(max_length=100, unique=True)
+    email = models.EmailField()
     password = models.CharField(max_length=255)  # replayable: sent to Node verbatim
     role = models.CharField(max_length=50, blank=True)  # informational, set on login
     token = models.TextField(blank=True, default="")
@@ -71,4 +70,4 @@ class NodeServiceAccount(models.Model):
     updated_at = models.DateTimeField(auto_now=True)
 
     def __str__(self):
-        return f"{self.first_name} {self.last_name} ({self.email})"
+        return f"{self.name} ({self.email})"

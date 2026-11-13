@@ -15,7 +15,7 @@ from langchain.agents import create_agent
 from langchain_core.tools import tool
 
 from . import worker_base as base
-from apps.core.services.AI.Tools.product_master_data_retrieve import (
+from apps.core.services.AI.Tools.plan_tools import (
     build_attribute_dropdown_sql,
     build_category_attribute_assign_sql,
     build_create_attribute_sql,

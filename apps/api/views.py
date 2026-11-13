@@ -6,15 +6,23 @@ logic lives in :mod:`apps.core.services` / :mod:`apps.core.operations`.
 """
 
 import json
+import uuid
 
+from django.core.cache import cache
 from django.http import JsonResponse, StreamingHttpResponse
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_http_methods
 
 from apps.core import commands as registry
+from apps.core import config
 import apps.core.operations  # noqa: F401  (populates the command registry)
 from apps.core.models import PriceQuote
-from apps.core.services.AI.Agents.manager_product import ProductMasterAgent, format_plan
+from apps.core.services.AI.Agents.manager_product import (
+    ProductMasterAgent,
+    format_plan,
+    parse_mode,
+)
+from apps.core.services.AI.Tools.act_tools import execute_plan
 from apps.core.services.AI.Agents.worker_product_name import ProductNameWorker
 from apps.core.services.AI.Agents.worker_web_research import WebResearchWorker
 from apps.core.services.AI.Agents.worker_product_price import ProductPriceWorker
@@ -105,19 +113,40 @@ def run_command(request, name):
     return JsonResponse({"command": spec.name, "result": result})
 
 
+AI_PLAN_CACHE_TTL = int(config.get("AI_PLAN_CACHE_TTL", "3600"))
+
+
+def _allow_act() -> bool:
+    return str(config.get("AI_ALLOW_ACT", "0")).strip().lower() in ("1", "true", "yes")
+
+
 @csrf_exempt
 @require_http_methods(["POST"])
 def manager_product(request):
-    """Run the read-only product-master agent and return a plan + SQL.
+    """Run the product-master agent in ``/plan`` (default) or ``/act`` mode.
 
-    Accepts JSON ``{"request": "...", "links": [...]}`` and returns both the
-    structured ``plan`` and a human-readable ``text`` rendering.  The agent is
-    read-only: it only reads the master schema / rows and emits a maintenance
-    plan with SQL, never executing anything.
+    Accepts JSON ``{"request": "...", "links": [...]}``.  The mode is taken from
+    an explicit ``body.mode`` ("plan"|"act") or a leading ``/plan`` / ``/act``
+    token in the request text (see ``parse_mode``); it defaults to ``plan``.
+
+    - plan mode: returns the structured ``plan``, its ``text`` rendering and a
+      ``plan_id`` (cached for ``AI_PLAN_CACHE_TTL``) so the user can review it.
+    - act mode: resolves the plan from ``body.plan``, then ``body.plan_id``, then
+      a fresh plan, and executes its write statements via ``execute_plan``.
+      ``body.dry_run`` validates/routes without executing; ``body.confirm``
+      authorises no-WHERE UPDATE/DELETE.  Execution is gated by AI_ALLOW_ACT.
     """
     body = _json_body(request)
-    task = body.get("request") or body.get("task") or body.get("message") or ""
-    if not str(task).strip():
+    raw_task = body.get("request") or body.get("task") or body.get("message") or ""
+
+    body_mode = str(body.get("mode") or "").strip().lower()
+    if body_mode in ("plan", "act"):
+        mode, task = body_mode, str(raw_task).strip()
+    else:
+        mode, task = parse_mode(raw_task)
+
+    has_plan = isinstance(body.get("plan"), dict)
+    if not task and not has_plan and not body.get("plan_id"):
         return JsonResponse({"error": "missing 'request' field"}, status=400)
 
     links = body.get("links") or []
@@ -128,30 +157,74 @@ def manager_product(request):
     if not isinstance(images, list):
         images = [images]
 
-    # Streaming mode: ?stream=1 or body {"stream": true} -> NDJSON of events.
     want_stream = body.get("stream") is True or request.GET.get("stream") in (
         "1",
         "true",
     )
-    if want_stream:
 
-        def events():
-            for event in ProductMasterAgent().stream(str(task), links, images):
-                yield json.dumps(event, ensure_ascii=False) + "\n"
-
-        response = StreamingHttpResponse(
-            events(),
-            content_type="application/x-ndjson",
+    # act mode is disabled unless the operator opts in.
+    if mode == "act" and not _allow_act():
+        plan = body.get("plan") or {}
+        return JsonResponse(
+            {
+                "mode": "act",
+                "plan": plan,
+                "executed": [],
+                "text": format_plan(plan),
+                "notice": "act mode is disabled; set AI_ALLOW_ACT=1 to execute.",
+            }
         )
-        response["X-Accel-Buffering"] = "no"
-        return response
 
-    try:
-        plan = ProductMasterAgent().plan(str(task), links, images)
-    except Exception as exc:  # noqa: BLE001 - surface the error to the caller
-        return JsonResponse({"error": str(exc)}, status=500)
+    if mode == "plan":
+        if want_stream:
 
-    return JsonResponse({"plan": plan, "text": format_plan(plan)})
+            def events():
+                agent = ProductMasterAgent(mode="plan")
+                for event in agent.stream(str(task), links, images):
+                    yield json.dumps(event, ensure_ascii=False) + "\n"
+
+            response = StreamingHttpResponse(
+                events(),
+                content_type="application/x-ndjson",
+            )
+            response["X-Accel-Buffering"] = "no"
+            return response
+
+        try:
+            plan = ProductMasterAgent(mode="plan").plan(str(task), links, images)
+        except Exception as exc:  # noqa: BLE001 - surface the error to the caller
+            return JsonResponse({"error": str(exc)}, status=500)
+
+        plan_id = str(uuid.uuid4())
+        cache.set(f"ai_plan:{plan_id}", plan, AI_PLAN_CACHE_TTL)
+        return JsonResponse(
+            {"mode": "plan", "plan": plan, "plan_id": plan_id,
+             "text": format_plan(plan)}
+        )
+
+    # ---- act mode ----
+    plan = body.get("plan")
+    if not isinstance(plan, dict):
+        plan_id = body.get("plan_id")
+        plan = cache.get(f"ai_plan:{plan_id}") if plan_id else None
+    if not isinstance(plan, dict):
+        try:
+            plan = ProductMasterAgent(mode="plan").plan(str(task), links, images)
+        except Exception as exc:  # noqa: BLE001
+            return JsonResponse({"error": str(exc)}, status=500)
+
+    from apps.core.services.AI.Agents.manager_product import assert_plan_sql
+
+    plan = assert_plan_sql(plan, mode="act")
+    executed = execute_plan(
+        plan,
+        dry_run=bool(body.get("dry_run")),
+        confirm=bool(body.get("confirm")),
+    )
+    return JsonResponse(
+        {"mode": "act", "plan": plan, "executed": executed,
+         "text": format_plan(plan, executed)}
+    )
 
 
 @csrf_exempt

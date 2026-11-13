@@ -21,7 +21,7 @@ from langchain_core.tools import tool
 
 from apps.core import config
 from . import worker_base as base
-from apps.core.services.AI.Tools.product_master_data_retrieve import (
+from apps.core.services.AI.Tools.utils import (
     MasterApiError,
     _rows,
     _sql_literal,

@@ -2,8 +2,20 @@
 
 Given a task (optionally with 1688 product links), the agent reads the product
 master database via the Node server's REST API and produces a maintenance plan
-plus SQL queries.  It never executes anything -- the returned SQL is text for a
-human (or a later, explicitly-approved executor) to run.
+plus SQL queries.
+
+The agent runs in one of two modes:
+
+- ``/plan`` (default): read-only.  The agent reads the schema / rows, drafts
+  SELECT / INSERT / UPDATE SQL as *text* for review, and may run read-only
+  SELECTs to verify ids.  Nothing is written.
+- ``/act``: the reviewed plan is executed.  Write statements run through the
+  Node server's guarded ``/query/update`` and ``/query/delete`` endpoints (see
+  :mod:`apps.core.services.AI.Tools.act_tools`).
+
+The mode is chosen at construction time (``ProductMasterAgent(mode=...)``) or
+parsed from a leading ``/plan`` / ``/act`` token in the request text (see
+``parse_mode``).
 """
 
 from __future__ import annotations
@@ -25,13 +37,16 @@ from apps.core.services.AI.Agents.worker_product_price import define_product_pri
 from apps.core.services.AI.Agents.worker_product_attributes import (
     manage_product_attributes,
 )
-from apps.core.services.AI.Tools.product_master_data_retrieve import (
+from apps.core.services.AI.Tools import utils as _tool_utils
+from apps.core.services.AI.Tools.plan_tools import (
+    PLAN_TOOLS,
     list_master_tables,
     get_master_table_schema,
     fetch_category_tree,
     fetch_attribute_catalog,
     execute_select_query,
 )
+from apps.core.services.AI.Tools.act_tools import ACT_TOOLS
 
 
 class SqlStep(TypedDict, total=False):
@@ -59,11 +74,10 @@ NUM_CTX = int(config.get("OLLAMA_NUM_CTX", "32768"))
 HEARTBEAT_SECONDS = 5.0
 
 
-# Statements that the agent may never emit (hard guardrail, applied after the
-# model responds and independent of whatever the model was told).
+# Statements the agent may never emit in any mode (hard guardrail, applied after
+# the model responds and independent of whatever the model was told).  UPDATE and
+# DELETE are NOT listed here: they are gated per-mode by assert_plan_sql below.
 _FORBIDDEN_SQL_VERBS = (
-    "UPDATE",
-    "DELETE",
     "DROP",
     "TRUNCATE",
     "ALTER",
@@ -74,8 +88,33 @@ _FORBIDDEN_SQL_VERBS = (
     "REPLACE",
 )
 
-# The only table an INSERT may target.
-_INSERT_ALLOWED_TABLE = "master_product_category_attribute_assign"
+# Verbs allowed per mode. Plan mode drafts INSERT/UPDATE for review; act mode
+# additionally allows DELETE (and executes everything).
+_MODE_WRITE_VERBS = {
+    "plan": ("SELECT", "INSERT", "UPDATE"),
+    "act": ("SELECT", "INSERT", "UPDATE", "DELETE"),
+}
+
+# Leading /plan or /act command token (only honoured at the start of the text,
+# so a URL or path containing "/act" is not mistaken for a command).
+_MODE_RE = re.compile(r"^\s*/(plan|act)\b[\s:,\-]*", re.IGNORECASE)
+
+
+def parse_mode(text: Any, default: str = "plan") -> tuple:
+    """Split an optional leading ``/plan`` or ``/act`` command from the request text.
+
+    Returns ``(mode, task)``. ``mode`` is ``"plan"`` or ``"act"``; ``task`` is the
+    remainder of the text with the command token stripped.  Text without a token
+    defaults to ``plan`` (read-only), so nothing executes by accident.
+    """
+    text = str(text or "")
+    match = _MODE_RE.match(text)
+    if match:
+        return match.group(1).lower(), _MODE_RE.sub("", text, count=1).strip()
+    default = str(default).lower()
+    if default not in ("plan", "act"):
+        default = "plan"
+    return default, text.strip()
 
 
 SYSTEM_PROMPT = """You are a product-maintenance analyst for a trading company.
@@ -84,13 +123,6 @@ Your job is to read the product-master database (via the provided tools) and
 produce a maintenance PLAN plus SQL queries. You NEVER write data. The only SQL
 you may run is a read-only SELECT via ``execute_select_query`` (to verify ids /
 rows); every write SQL you produce is text for a human to review.
-
-## Data model (MySQL)
-- master_categories: id, name, description, description_trad_chinese, parent_id (self FK).
-- master_product_attributes: id, name (snake_case), multiple_selection, label,
-  description, dropdown_reference, catalog_default_display.
-- master_product_category_attribute_assign: id, category_id -> master_categories.id,
-  attribute_id -> master_product_attributes.id. UNIQUE(category_id, attribute_id).
 
 ## Working rules
 1. Start by calling get_master_table_schema for the tables you plan to touch.
@@ -153,18 +185,43 @@ or current rows before delegating or proposing changes.
 """
 
 
-# Tools the manager agent may call directly.
-WORKER_TOOLS = [
+ACT_SYSTEM_PROMPT = """You are a product-maintenance analyst in ACT mode.
+
+The human message contains an approved plan that the user has already reviewed.
+Your job is to EXECUTE it, not to redesign it.
+
+## Data model (MySQL)
+- master_categories: id, name, description, description_trad_chinese, parent_id.
+- master_product_attributes: id, name (snake_case), multiple_selection, label,
+  description, dropdown_reference, catalog_default_display.
+- master_product_category_attribute_assign: id, category_id, attribute_id.
+- master_product_attribute_dropdown: id, attribute_id, value.
+
+## Rules
+1. Execute only the statements that appear in the approved plan.
+2. INSERT/UPDATE -> execute_update_query; DELETE -> execute_delete_query.
+3. A write without a WHERE clause needs a confirm token ('UPDATE_ALL_ROWS' or
+   'DELETE_ALL_ROWS'); do not guess it -- ask the user for confirmation instead.
+4. Verify the outcome with execute_select_query and report the actual affected rows.
+5. Never invent new statements or modify the approved SQL.
+
+Return a JSON object with exactly: summary (what was executed and the result),
+plan (the steps you performed), sql (the statements you actually executed),
+missing_data (anything that failed or needs human input), risks. No prose outside
+the JSON object.
+"""
+
+
+# Specialist workers the manager delegates to in /plan mode.
+_MANAGER_WORKER_TOOLS = [
     rename_product_with_seo,
     research_product_web,
     define_product_price,
     manage_product_attributes,
-    list_master_tables,
-    get_master_table_schema,
-    fetch_category_tree,
-    fetch_attribute_catalog,
-    execute_select_query,
 ]
+
+# Tools the manager agent may call directly in /plan mode (read + draft + web).
+WORKER_TOOLS = _MANAGER_WORKER_TOOLS + list(PLAN_TOOLS)
 
 
 def _normalise_plan(plan: Any) -> ProductPlan:
@@ -217,35 +274,59 @@ def _first_verb(statement: str) -> str:
     return match.group(2).upper() if match else ""
 
 
-def assert_plan_read_only(plan: ProductPlan) -> ProductPlan:
-    """Enforce the read-only guardrail.
+def assert_plan_sql(plan: ProductPlan, *, mode: str = "plan") -> ProductPlan:
+    """Enforce the SQL guardrail for a mode.
 
-    SELECT is allowed anywhere; INSERT is allowed only into
-    master_product_category_attribute_assign.  Any other write/DDL statement is
-    removed from ``sql`` and reported in ``risks``.
+    - ``plan`` mode: SELECT / INSERT / UPDATE are kept (writes are shown for the
+      human to review before switching to ``/act``).
+    - ``act`` mode: SELECT / INSERT / UPDATE / DELETE are kept.
+    - both modes: DDL is always removed, and every write must target a table in
+      ``WRITE_ALLOWED_TABLES``.
+
+    Removed statements are reported in ``risks`` and mirrored in a new
+    ``skipped_sql`` list so the response can explain exactly what was dropped.
     """
+    mode = "act" if str(mode).lower() == "act" else "plan"
+    allowed_verbs = _MODE_WRITE_VERBS[mode]
+
     safe: List[SqlStep] = []
+    skipped: List[Dict[str, Any]] = []
     risks = list(plan.get("risks", []))
+
     for step in plan.get("sql", []):
         statement = step.get("statement", "")
         verb = _first_verb(statement)
 
         if verb in _FORBIDDEN_SQL_VERBS:
             risks.append(f"Removed unsafe SQL ({verb}): {statement[:120]}")
+            skipped.append({"verb": verb, "statement": statement})
             continue
 
-        if verb == "INSERT" and _INSERT_ALLOWED_TABLE not in statement:
-            risks.append(
-                f"Removed INSERT outside {_INSERT_ALLOWED_TABLE}: {statement[:120]}"
-            )
-            continue
+        if verb in ("INSERT", "UPDATE", "DELETE"):
+            if verb not in allowed_verbs:
+                risks.append(
+                    f"Removed {verb} (not allowed in {mode} mode): {statement[:120]}"
+                )
+                skipped.append({"verb": verb, "statement": statement})
+                continue
+            target = _tool_utils.write_target(statement)
+            if target is None or target not in _tool_utils.WRITE_ALLOWED_TABLES:
+                risks.append(f"Removed write outside allowed tables: {statement[:120]}")
+                skipped.append({"verb": verb, "statement": statement})
+                continue
 
         if statement.strip() or step.get("purpose") or step.get("verification"):
             safe.append(step)
 
     plan["sql"] = safe
+    plan["skipped_sql"] = skipped
     plan["risks"] = risks
     return plan
+
+
+def assert_plan_read_only(plan: ProductPlan) -> ProductPlan:
+    """Backward-compatible alias for the plan-mode guardrail."""
+    return assert_plan_sql(plan, mode="plan")
 
 
 def _extract_json_block(text: str) -> Optional[Dict[str, Any]]:
@@ -281,8 +362,15 @@ def _chunk_text(message: Any) -> str:
     return str(content)
 
 
-def format_plan(plan: ProductPlan) -> str:
-    """Render a plan as a human-readable block of text."""
+def format_plan(
+    plan: ProductPlan, executed: Optional[List[Dict[str, Any]]] = None
+) -> str:
+    """Render a plan as a human-readable block of text.
+
+    When ``executed`` (the output of ``act_tools.execute_plan``) is provided, an
+    ``Execution:`` block is appended.  In plan mode (no ``executed``), a footer
+    reminds the user that write statements are only run via ``/act``.
+    """
     lines = [f"Summary: {plan.get('summary', '')}"]
     if plan.get("plan"):
         lines.append("\nPlan:")
@@ -321,6 +409,34 @@ def format_plan(plan: ProductPlan) -> str:
             if step.get("verification"):
                 lines.append("  -- verify:")
                 lines.append("  " + step["verification"].replace("\n", "\n  "))
+    if executed:
+        lines.append("\nExecution:")
+        for entry in executed:
+            verb = entry.get("verb", "?")
+            if entry.get("skipped"):
+                status = "SKIPPED"
+            elif entry.get("ok"):
+                status = "OK"
+            else:
+                status = "FAILED"
+            line = f"  - {verb} {status}"
+            if entry.get("affectedRows") is not None:
+                line += f" (affected {entry['affectedRows']})"
+            if entry.get("needs_confirmation"):
+                line += " [needs confirmation]"
+            lines.append(line)
+            if entry.get("error"):
+                lines.append(f"    error: {entry['error']}")
+    elif plan.get("sql"):
+        write_count = sum(
+            1
+            for step in plan["sql"]
+            if _first_verb(step.get("statement", "")) != "SELECT"
+        )
+        if write_count:
+            lines.append(
+                f"\nRun with /act to execute ({write_count} write statement(s) above)."
+            )
     if plan.get("risks"):
         lines.append("\nRisks:")
         lines.extend(f"  - {item}" for item in plan["risks"])
@@ -335,10 +451,12 @@ class ProductMasterAgent:
         model: Optional[str] = None,
         temperature: float = 0.0,
         recursion_limit: int = 25,
+        mode: str = "plan",
     ) -> None:
         self.model = model or DEFAULT_MODEL
         self.temperature = temperature
         self.recursion_limit = recursion_limit
+        self.mode = "act" if str(mode).lower() == "act" else "plan"
         self.llm = _base.build_llm(
             self.model,
             temperature=self.temperature,
@@ -348,10 +466,16 @@ class ProductMasterAgent:
 
     def _get_agent(self):
         if self._agent is None:
+            if self.mode == "act":
+                tools = ACT_TOOLS
+                prompt = ACT_SYSTEM_PROMPT
+            else:
+                tools = WORKER_TOOLS
+                prompt = SYSTEM_PROMPT + WORKER_ROUTING_PROMPT
             self._agent = create_agent(
                 model=self.llm,
-                tools=WORKER_TOOLS,
-                system_prompt=SYSTEM_PROMPT + WORKER_ROUTING_PROMPT,
+                tools=tools,
+                system_prompt=prompt,
             )
         return self._agent
 
@@ -361,6 +485,8 @@ class ProductMasterAgent:
         links: Optional[List[str]] = None,
         images: Optional[List[str]] = None,
         context: Optional[Dict[str, Any]] = None,
+        *,
+        plan_text: Optional[str] = None,
     ) -> str:
         """
         Build the human-readable message to send to the agent.
@@ -369,6 +495,7 @@ class ProductMasterAgent:
             links: Optional list of product links.
             images: Optional list of product image paths or data URLs.
             context: Optional additional context as a dictionary.
+            plan_text: Optional approved plan to execute verbatim (act mode).
 
         Returns:
             A formatted string message to send to the agent.
@@ -384,9 +511,20 @@ class ProductMasterAgent:
             lines.append("\nAdditional context:")
             for key, value in context.items():
                 lines.append(f"  {key}: {value}")
-        lines.append(
-            "\nDelegate to the appropriate worker and produce the plan. Do not execute anything."
-        )
+        if plan_text:
+            lines.append("\nApproved plan (execute verbatim):")
+            lines.append(plan_text)
+        if self.mode == "act":
+            lines.append(
+                "\nYou are in ACT mode. Execute the approved plan above using the "
+                "execute_* tools and report the actual affected rows. Do not invent "
+                "new statements."
+            )
+        else:
+            lines.append(
+                "\nDelegate to the appropriate worker and produce the plan. Do not "
+                "execute anything; write SQL for review."
+            )
         return "\n".join(lines)
 
     def _parse_result(self, result: Dict[str, Any]) -> ProductPlan:
@@ -415,7 +553,7 @@ class ProductMasterAgent:
 
         plan = _normalise_plan(structured)
         plan["worker_results"], plan["drafts"] = self._collect_worker_results(result)
-        return assert_plan_read_only(plan)
+        return assert_plan_sql(plan, mode=self.mode)
 
     @staticmethod
     def _collect_worker_results(result: Dict[str, Any]):

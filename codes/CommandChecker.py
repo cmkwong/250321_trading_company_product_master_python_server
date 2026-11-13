@@ -15,6 +15,35 @@ from codes.utils import paramModel, timeModel, fileModel, inputModel, printModel
 from codes.utils.paramModel import command_check, params_check
 
 
+def _stream_product_plan(task):
+    """Stream the read-only product-master agent and return its guarded plan.
+
+    Module-level on purpose: ``codes/main.py`` calls every method on
+    ``CommandChecker`` with no arguments while looking for a command match, so
+    an undecorated helper method here would be invoked as a command.
+    """
+    from apps.core.services.AI.Agents.manager_product import ProductMasterAgent
+
+    plan = None
+    agent = ProductMasterAgent(mode="plan")
+    try:
+        for event in agent.stream(task):
+            if event["type"] == "token":
+                print(event["text"], end="", flush=True)
+            elif event["type"] == "status":
+                print(f"\n[{event['text']}]", flush=True)
+            elif event["type"] == "error":
+                print(f"\n[ERROR] {event['error']}", flush=True)
+                return None
+            elif event["type"] == "plan":
+                plan = event["plan"]
+                print("\n\n" + event["text"])
+    except Exception as exc:  # noqa: BLE001 - surface as an error line
+        print(f"\n[ERROR] {exc}", flush=True)
+        return None
+    return plan
+
+
 class CommandChecker:
 
     def __init__(self):
@@ -38,6 +67,9 @@ class CommandChecker:
 
         # variables
         self.Product_Index = ""
+
+        # last reviewed product-master plan (used by '/act' in the -mp command)
+        self._last_product_plan = None
 
         # control variable
         self.QUIT = "quit"
@@ -318,4 +350,62 @@ class CommandChecker:
     )
     def rename_images_by_similarity(self, **params):
         self.alibabaController.rename_edited_folder_image_by_similarity(**params)
+        return self.COMMAND_CHECKED
+
+    # ---- product-master maintenance agent (LangChain + Ollama qwen3.5) ----
+    # One command: type a task, optionally prefixed with /plan or /act.
+    # /plan (or no token) streams a read-only plan and stores it; /act executes
+    # the last reviewed plan (or a fresh plan when a task is supplied) after a
+    # y/N confirmation, through the deterministic execute_plan guardrail.
+    @command_check(["mp"])
+    @params_check({"task": ["", str], "dry_run": [True, bool]})
+    def product_master(self, **params):
+        from apps.core.services.AI.Agents.manager_product import (
+            format_plan,
+            parse_mode,
+            assert_plan_sql,
+        )
+        from apps.core.services.AI.Tools.act_tools import execute_plan
+        from apps.core import config
+
+        mode, task = parse_mode(params["task"])
+
+        if mode == "plan":
+            if not task:
+                print(
+                    "Task is empty. Type a task, optionally prefixed with /plan or /act."
+                )
+                return self.COMMAND_CHECKED
+            plan = _stream_product_plan(task)
+            if plan is not None:
+                self._last_product_plan = plan
+                print("\nHint: run '-mp' again and type '/act' to execute this plan.")
+            return self.COMMAND_CHECKED
+
+        # ---- /act mode ----
+        if (
+            str(config.get("AI_ALLOW_ACT", "0")).strip().lower()
+            not in ("1", "true", "yes")
+        ):
+            print("act mode is disabled; set AI_ALLOW_ACT=1 in .env")
+            return self.COMMAND_CHECKED
+
+        if task:
+            plan = _stream_product_plan(task)
+            if plan is None:
+                return self.COMMAND_CHECKED
+        elif self._last_product_plan is not None:
+            plan = self._last_product_plan
+        else:
+            print("No plan yet. Run '-mp' with /plan <task> or /act <task> first.")
+            return self.COMMAND_CHECKED
+
+        plan = assert_plan_sql(plan, mode="act")
+        print(format_plan(plan))
+        if not inputModel.user_confirm():
+            print("Cancelled.")
+            return self.COMMAND_CHECKED
+
+        executed = execute_plan(plan, dry_run=bool(params["dry_run"]))
+        print(format_plan(plan, executed))
         return self.COMMAND_CHECKED

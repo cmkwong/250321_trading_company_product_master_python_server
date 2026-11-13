@@ -23,13 +23,12 @@ class CommandJobAdmin(admin.ModelAdmin):
 @admin.register(NodeServiceAccount)
 class NodeServiceAccountAdmin(admin.ModelAdmin):
     list_display = (
-        "first_name",
-        "last_name",
+        "name",
         "email",
         "role",
         "is_active",
         "token_expires_at",
     )
     list_filter = ("is_active",)
-    search_fields = ("first_name", "last_name", "email")
+    search_fields = ("name", "email")
     readonly_fields = ("role", "token", "token_expires_at", "created_at", "updated_at")
