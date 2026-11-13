@@ -1,6 +1,6 @@
 from django.contrib import admin
 
-from .models import CommandJob, PriceQuote, Product
+from .models import CommandJob, NodeServiceAccount, PriceQuote, Product
 
 
 @admin.register(Product)
@@ -18,3 +18,18 @@ class PriceQuoteAdmin(admin.ModelAdmin):
 class CommandJobAdmin(admin.ModelAdmin):
     list_display = ("command", "kind", "status", "created_at", "finished_at")
     list_filter = ("kind", "status")
+
+
+@admin.register(NodeServiceAccount)
+class NodeServiceAccountAdmin(admin.ModelAdmin):
+    list_display = (
+        "first_name",
+        "last_name",
+        "email",
+        "role",
+        "is_active",
+        "token_expires_at",
+    )
+    list_filter = ("is_active",)
+    search_fields = ("first_name", "last_name", "email")
+    readonly_fields = ("role", "token", "token_expires_at", "created_at", "updated_at")

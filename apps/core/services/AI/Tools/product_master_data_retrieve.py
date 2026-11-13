@@ -2,10 +2,11 @@
 
 These tools talk to the Node product-master server (default
 ``http://127.0.0.1:3001/api/v1``) or read the server's schema modules on disk.
-No tool writes any data; SQL is only ever *produced as text* for the caller to
-review / run manually.  All HTTP access goes through a ``requests.Session``
-with ``trust_env = False`` so a localhost request can never be hijacked by a
-mis-configured system proxy.
+Most tools never write data; SQL is *produced as text* for the caller to review
+/ run manually.  The one exception is ``execute_select_query``, which runs a
+read-only SELECT through the Node server's guarded endpoint using a service JWT.
+All HTTP access goes through a ``requests.Session`` with ``trust_env = False`` so
+a localhost request can never be hijacked by a mis-configured system proxy.
 """
 
 from __future__ import annotations
@@ -46,6 +47,33 @@ ALLOWED_READ_TABLES = (
     "master_product_name_types",
     "master_currencies",
 )
+
+# --- Guarded SELECT execution (see routes/general/index.js -> query/select) ---
+SELECT_QUERY_PATH = "/general/trade-business/query/select"
+SELECT_QUERY_MAX_LENGTH = 100_000
+
+# Tables a generated SELECT may reference. Override with AI_QUERY_TABLES (.env).
+QUERY_ALLOWED_TABLES = tuple(
+    t.strip()
+    for t in str(config.get("AI_QUERY_TABLES", ",".join(ALLOWED_READ_TABLES))).split(",")
+    if t.strip()
+)
+
+# Mirrors SELECT_BLOCKED_KEYWORDS in
+# 241127_trading_company_product_master_server/MVC/controller/general/trade_business_controller.js
+SELECT_BLOCKED_KEYWORDS = (
+    "insert", "update", "delete", "replace", "drop", "alter", "create",
+    "truncate", "rename", "grant", "revoke", "call", "execute", "prepare",
+    "deallocate", "set", "use", "lock", "unlock", "handler", "load",
+    "outfile", "dumpfile", "into", "sleep", "benchmark",
+    "get_lock", "release_lock",
+)
+_SELECT_BLOCKED_RE = re.compile(
+    r"\b(?:" + "|".join(SELECT_BLOCKED_KEYWORDS) + r")\b", re.I
+)
+_SELECT_COMMENT_RE = re.compile(r"--|#|/\*|\*/")
+_SELECT_SEMICOLON_RE = re.compile(r";")
+_SELECT_TABLE_RE = re.compile(r"\b(?:from|join)\s+`?([A-Za-z0-9_]+)`?", re.I)
 
 IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9_]+$")
 
@@ -91,6 +119,74 @@ def _api_get(path: str, params: Optional[Dict[str, Any]] = None) -> Dict[str, An
     try:
         return response.json()
     except ValueError as exc:  # non-JSON body
+        raise MasterApiError(
+            f"MASTER_API_BAD_JSON: {response.text[:200]}",
+            hint="Unexpected response format from the Node API.",
+        ) from exc
+
+
+def _service_headers() -> Dict[str, str]:
+    """Authorization header using the cached Node service JWT (lazy import)."""
+    from apps.core.services import node_auth
+
+    return {"Authorization": f"Bearer {node_auth.get_service_token()}"}
+
+
+def _api_post(path: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+    """POST a JSON payload to a guarded master endpoint, normalising failures.
+
+    On a 401/403 the cached service token is dropped and the call retried once,
+    covering both a token that expired (168h TTL) and one invalidated by a
+    password change (token_version bump) on the Node side.
+    """
+    url = f"{MASTER_API_BASE}{path}"
+
+    def _post() -> requests.Response:
+        return _get_session().post(
+            url,
+            json=payload,
+            headers=_service_headers(),
+            timeout=REQUEST_TIMEOUT,
+        )
+
+    try:
+        response = _post()
+    except requests.RequestException as exc:
+        raise MasterApiError(
+            f"MASTER_API_UNREACHABLE: {type(exc).__name__}: {exc}",
+            hint=f"Start the Node server (npm start) in {NODE_SERVER_ROOT} and confirm {url} answers.",
+        ) from exc
+
+    if response.status_code in (401, 403):
+        from apps.core.services import node_auth
+
+        node_auth.invalidate_service_token()
+        try:
+            response = _post()
+        except requests.RequestException as exc:
+            raise MasterApiError(
+                f"MASTER_API_UNREACHABLE: {type(exc).__name__}: {exc}",
+                hint=f"Start the Node server (npm start) in {NODE_SERVER_ROOT} and confirm {url} answers.",
+            ) from exc
+
+    if response.status_code in (401, 403):
+        raise MasterApiError(
+            f"MASTER_API_AUTH_{response.status_code}: {response.text[:300]}",
+            hint=(
+                "The service account token was rejected. Check the NodeServiceAccount "
+                "row (or MASTER_API_EMAIL / MASTER_API_PASSWORD) belongs to a Node user "
+                "with an admin / system-admin / developer role."
+            ),
+        )
+    if response.status_code >= 400:
+        raise MasterApiError(
+            f"MASTER_API_HTTP_{response.status_code}: {response.text[:300]}",
+            hint="The server-side SELECT guard rejected the query; simplify it and retry.",
+        )
+
+    try:
+        return response.json()
+    except ValueError as exc:
         raise MasterApiError(
             f"MASTER_API_BAD_JSON: {response.text[:200]}",
             hint="Unexpected response format from the Node API.",
@@ -683,6 +779,114 @@ def build_attribute_dropdown_sql(attribute: str, values: List[str]) -> str:
         return _tool_error(exc)
 
 
+def _mask_quoted(sql: str) -> str:
+    """Replace quoted strings/identifiers so keywords inside them are ignored."""
+    return re.sub(
+        r"'(?:''|\\.|[^'\\])*'|\"(?:\"\"|\\.|[^\"\\])*\"|`(?:``|[^`])*`",
+        " ",
+        sql,
+    )
+
+
+def _assert_select_only(query: str) -> str:
+    """Validate a read-only SELECT and return the normalised statement.
+
+    Mirrors ``assertSelectOnlyQuery`` in the Node server so bad SQL is rejected
+    locally with an actionable hint before it ever reaches the API.
+    """
+    if not isinstance(query, str):
+        raise MasterApiError(
+            'query must be a string holding a single SELECT statement.',
+            hint="Pass the SQL as a plain string.",
+        )
+    trimmed = query.strip()
+    if not trimmed:
+        raise MasterApiError("Query cannot be empty.", hint="Provide a SELECT statement.")
+    if len(trimmed) > SELECT_QUERY_MAX_LENGTH:
+        raise MasterApiError(
+            f"Query exceeds the maximum allowed length of {SELECT_QUERY_MAX_LENGTH} characters.",
+            hint="Shorten the query.",
+        )
+
+    normalized = trimmed[:-1].rstrip() if trimmed.endswith(";") else trimmed
+    masked = _mask_quoted(normalized)
+
+    if _SELECT_COMMENT_RE.search(masked):
+        raise MasterApiError("SQL comments are not allowed.", hint="Remove comments.")
+    if _SELECT_SEMICOLON_RE.search(masked):
+        raise MasterApiError(
+            "Only a single SELECT statement is allowed.", hint="Send one statement."
+        )
+    if not re.match(r"^select\b", masked.strip(), re.I):
+        raise MasterApiError(
+            "Only SELECT queries are allowed.", hint="Start the query with SELECT."
+        )
+    if _SELECT_BLOCKED_RE.search(masked):
+        raise MasterApiError(
+            "Query contains forbidden keywords; only read-only SELECT is allowed.",
+            hint="Remove write/DDL keywords.",
+        )
+    return normalized
+
+
+def _assert_allowed_tables(masked: str) -> None:
+    """Every FROM/JOIN identifier must be in QUERY_ALLOWED_TABLES."""
+    for table in _SELECT_TABLE_RE.findall(masked):
+        if table not in QUERY_ALLOWED_TABLES:
+            raise MasterApiError(
+                f"Table not allowed for querying: {table}",
+                hint=f"Allowed tables: {', '.join(QUERY_ALLOWED_TABLES)}",
+            )
+
+
+def _ensure_limit(sql: str, cap: int) -> str:
+    if not re.search(r"\blimit\b", _mask_quoted(sql), re.I):
+        sql = sql.rstrip().rstrip(";").rstrip() + f"\nLIMIT {cap}"
+    return sql
+
+
+@tool
+def execute_select_query(query: str, limit: int = 100) -> str:
+    """Run ONE read-only SELECT against the product-master database and return its rows.
+
+    Only tables in QUERY_ALLOWED_TABLES may be referenced. Writes, DDL, comments and
+    multiple statements are rejected locally and again by the Node server. A LIMIT is
+    appended when absent and returned rows are capped at AI_MAX_ROWS. Use it to verify
+    existing rows / ids before proposing changes; never to write data.
+    """
+    try:
+        sql = _assert_select_only(query)
+        _assert_allowed_tables(_mask_quoted(sql))
+
+        cap = max(1, min(int(limit or 100), AI_MAX_ROWS))
+        sql = _ensure_limit(sql, cap)
+
+        data = _api_post(SELECT_QUERY_PATH, {"query": sql})
+        payload = data.get("data") or {}
+        rows = payload.get("rows")
+        if not isinstance(rows, list):
+            raise MasterApiError(
+                "Unexpected 'data.rows' payload.",
+                hint="The Node API did not return a list of rows.",
+            )
+
+        total = int(payload.get("rowCount", len(rows)))
+        returned = rows[:cap]
+        return json.dumps(
+            {
+                "ok": True,
+                "query": sql,
+                "rowCount": total,
+                "returned": len(returned),
+                "truncated": len(rows) > len(returned) or total > len(returned),
+                "rows": returned,
+            },
+            ensure_ascii=False,
+        )
+    except Exception as exc:  # noqa: BLE001 - render any failure as a stable JSON string
+        return _tool_error(exc)
+
+
 # Tools exposed to the agent.
 TOOLS = [
     list_master_tables,
@@ -696,6 +900,7 @@ TOOLS = [
     build_category_attribute_assign_sql,
     build_create_attribute_sql,
     build_attribute_dropdown_sql,
+    execute_select_query,
 ]
 
 
@@ -722,5 +927,13 @@ if __name__ == "__main__":
     print(build_category_attribute_assign_sql.invoke(
         {"category": "Pet Playpens", "attributes": ["material", "color"]}
     ))
+
+    print("\n=== execute_select_query (allowed) ===")
+    print(execute_select_query.invoke(
+        {"query": "SELECT id, name FROM master_categories LIMIT 3"}
+    ))
+
+    print("\n=== execute_select_query (rejected: DROP) ===")
+    print(execute_select_query.invoke({"query": "DROP TABLE master_categories"}))
 
 

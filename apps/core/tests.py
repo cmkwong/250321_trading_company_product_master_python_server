@@ -141,6 +141,87 @@ class ProductMasterToolTests(TestCase):
         self.assertTrue(any("DROP" in r for r in cleaned["risks"]))
         self.assertTrue(any("UPDATE" in r for r in cleaned["risks"]))
 
+    def test_execute_select_rejects_write_statements(self):
+        from unittest.mock import patch
+
+        with patch.object(self.t, "_api_post") as post:
+            for bad in (
+                "UPDATE master_categories SET name='x'",
+                "DROP TABLE master_categories",
+                "SELECT 1; SELECT 2",
+                "SELECT id FROM master_categories -- comment",
+            ):
+                data = json.loads(self.t.execute_select_query.invoke({"query": bad}))
+                self.assertFalse(data["ok"], bad)
+            post.assert_not_called()
+
+    def test_execute_select_rejects_unknown_table(self):
+        from unittest.mock import patch
+
+        with patch.object(self.t, "_api_post") as post:
+            data = json.loads(
+                self.t.execute_select_query.invoke({"query": "SELECT * FROM users"})
+            )
+        self.assertFalse(data["ok"])
+        self.assertIn("users", data["error"])
+        self.assertIn("master_categories", data["hint"])
+        post.assert_not_called()
+
+    def test_execute_select_appends_limit_and_truncates(self):
+        from unittest.mock import patch
+
+        rows = [{"id": i, "name": f"n{i}"} for i in range(5)]
+
+        def fake_post(path, payload):
+            return {"data": {"rowCount": 5, "rows": rows}}
+
+        with patch.object(self.t, "_api_post", side_effect=fake_post) as post:
+            data = json.loads(
+                self.t.execute_select_query.invoke(
+                    {"query": "SELECT * FROM master_categories", "limit": 2}
+                )
+            )
+        self.assertTrue(data["ok"])
+        self.assertIn("LIMIT 2", post.call_args[0][1]["query"])
+        self.assertTrue(data["truncated"])
+        self.assertEqual(data["returned"], 2)
+        self.assertEqual(len(data["rows"]), 2)
+
+    def test_execute_select_retries_after_401(self):
+        from unittest.mock import patch
+
+        class _Resp:
+            def __init__(self, status, body):
+                self.status_code = status
+                self.text = "" if status == 200 else body
+                self._body = body
+
+            def json(self):
+                return self._body
+
+        calls = []
+
+        def fake_post(url, json=None, headers=None, timeout=None):
+            calls.append(1)
+            if len(calls) == 1:
+                return _Resp(401, "unauthorized")
+            return _Resp(200, {"data": {"rowCount": 1, "rows": [{"id": "c1"}]}})
+
+        class _Session:
+            def post(self, url, json=None, headers=None, timeout=None):
+                return fake_post(url)
+
+        with patch.object(self.t, "_get_session", return_value=_Session()), patch.object(
+            self.t, "_service_headers", return_value={"Authorization": "Bearer x"}
+        ):
+            data = json.loads(
+                self.t.execute_select_query.invoke(
+                    {"query": "SELECT id FROM master_categories LIMIT 1"}
+                )
+            )
+        self.assertTrue(data["ok"])
+        self.assertEqual(len(calls), 2)
+
 
 class ProductMasterAgentStreamTests(TestCase):
     """Offline tests for the agent stream() event generator (no LLM/network)."""
@@ -453,5 +534,108 @@ class ManagerDelegationTests(TestCase):
         self.assertEqual(len(worker_results), 1)
         self.assertEqual(drafts[0]["worker"], "product_price")
         self.assertIn("product_sale_prices_by_qty", drafts[0]["statement"])
+
+
+class NodeServiceAccountTests(TestCase):
+    """Tests for the Node JWT client (no network)."""
+
+    @staticmethod
+    def _make_token(exp_offset: int = 3600) -> str:
+        import base64
+        import time
+
+        def enc(obj):
+            return (
+                base64.urlsafe_b64encode(json.dumps(obj).encode())
+                .decode()
+                .rstrip("=")
+            )
+
+        header = enc({"alg": "HS256", "typ": "JWT"})
+        payload = enc({"exp": int(time.time()) + exp_offset})
+        return f"{header}.{payload}.sig"
+
+    def _fake_session(self, token, body_override=None):
+        from unittest.mock import MagicMock
+
+        session = MagicMock()
+        body = body_override or {
+            "status": "success",
+            "email": "ai@example.com",
+            "role": "developer",
+            "token": token,
+        }
+        resp = MagicMock()
+        resp.status_code = 200
+        resp.json.return_value = body
+        resp.text = ""
+        session.post.return_value = resp
+        return session
+
+    def test_token_cached_and_refreshed_on_demand(self):
+        from unittest.mock import patch
+
+        from apps.core.models import NodeServiceAccount
+        from apps.core.services import node_auth
+
+        NodeServiceAccount.objects.create(
+            name="ai-agent", email="ai@example.com", password="pw", is_active=True
+        )
+        session = self._fake_session(self._make_token(3600))
+        node_auth._cache.clear()
+        with patch.object(node_auth, "_get_session", return_value=session):
+            first = node_auth.get_service_token()
+            second = node_auth.get_service_token()
+            # A fresh login on force_refresh should mint a *different* token.
+            session.post.return_value.json.return_value["token"] = self._make_token(7200)
+            refreshed = node_auth.get_service_token(force_refresh=True)
+
+        self.assertEqual(first, second)
+        self.assertNotEqual(first, refreshed)
+        self.assertEqual(session.post.call_count, 2)
+
+        acct = NodeServiceAccount.objects.get(name="ai-agent")
+        self.assertEqual(acct.role, "developer")
+        self.assertEqual(acct.token, refreshed)
+
+    def test_env_fallback_when_no_row(self):
+        from unittest.mock import patch
+
+        from apps.core.services import node_auth
+
+        session = self._fake_session(self._make_token(3600))
+        node_auth._cache.clear()
+        with patch.object(
+            node_auth.config, "get",
+            side_effect=lambda key, default=None: (
+                {"MASTER_API_EMAIL": "env@example.com", "MASTER_API_PASSWORD": "pw"}.get(key, default)
+            ),
+        ), patch.object(node_auth, "_get_session", return_value=session):
+            token = node_auth.get_service_token()
+
+        self.assertIsNotNone(token)
+        self.assertEqual(session.post.call_count, 1)
+
+    def test_rejected_credentials_raise_node_auth_error(self):
+        from unittest.mock import MagicMock, patch
+
+        from apps.core.models import NodeServiceAccount
+        from apps.core.services import node_auth
+
+        NodeServiceAccount.objects.create(
+            name="ai-agent", email="ai@example.com", password="bad", is_active=True
+        )
+        session = MagicMock()
+        resp = MagicMock()
+        resp.status_code = 404
+        resp.text = '{"status": "failed", "msg": "Wrong user / wrong password"}'
+        session.post.return_value = resp
+        node_auth._cache.clear()
+        with patch.object(node_auth, "_get_session", return_value=session):
+            with self.assertRaises(node_auth.NodeAuthError) as ctx:
+                node_auth.get_service_token()
+        self.assertIn("NODE_AUTH_REJECTED", str(ctx.exception))
+        self.assertTrue(ctx.exception.hint)
+
 
 

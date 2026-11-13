@@ -31,7 +31,9 @@ def _validate_url(url: str) -> str:
     if not host:
         raise ValueError(f"URL has no host: {url!r}")
     allow_private = str(config.get("AI_WEB_ALLOW_PRIVATE_HOSTS", "0")).lower() in (
-        "1", "true", "yes",
+        "1",
+        "true",
+        "yes",
     )
     if not allow_private:
         try:
@@ -65,9 +67,12 @@ class WebResearchWorker:
         self.model = model or base.DEFAULT_MODEL
         self.llm = llm or base.build_llm(self.model)
 
-    def research(self, urls: Optional[List[str]] = None,
-                 target_fields: Optional[List[str]] = None,
-                 question: Optional[str] = None) -> Dict[str, Any]:
+    def research(
+        self,
+        urls: Optional[List[str]] = None,
+        target_fields: Optional[List[str]] = None,
+        question: Optional[str] = None,
+    ) -> Dict[str, Any]:
         urls = [u for u in (urls or []) if str(u).strip()][:MAX_URLS]
         target_fields = [f for f in (target_fields or []) if str(f).strip()]
         if not urls:
@@ -92,8 +97,11 @@ class WebResearchWorker:
 
         if not pages:
             return {
-                "worker": "web_research", "ok": False,
-                "error": "could not fetch any page", "sources": sources, "risks": risks,
+                "worker": "web_research",
+                "ok": False,
+                "error": "could not fetch any page",
+                "sources": sources,
+                "risks": risks,
             }
 
         combined = "\n\n".join(pages)[:MAX_CHARS]
@@ -118,13 +126,22 @@ class WebResearchWorker:
             )
 
         try:
-            text = base.message_text(self.llm.invoke([
-                SystemMessage(content=WEB_SYSTEM_PROMPT),
-                HumanMessage(content=user),
-            ]))
+            text = base.message_text(
+                self.llm.invoke(
+                    [
+                        SystemMessage(content=WEB_SYSTEM_PROMPT),
+                        HumanMessage(content=user),
+                    ]
+                )
+            )
         except Exception as exc:  # noqa: BLE001
-            return {"worker": "web_research", "ok": False, "error": str(exc),
-                    "sources": sources, "risks": risks}
+            return {
+                "worker": "web_research",
+                "ok": False,
+                "error": str(exc),
+                "sources": sources,
+                "risks": risks,
+            }
 
         data = base.extract_json_block(text) or {}
         fields = data.get("fields") if isinstance(data.get("fields"), dict) else {}
@@ -154,9 +171,9 @@ def research_product_web(
 ) -> str:
     """Fetch one or more web pages and summarise them into the requested target fields. Returns a JSON envelope (never fabricates fields not present on the page)."""
     try:
-        result = WebResearchWorker().research(urls=urls, target_fields=target_fields, question=question)
+        result = WebResearchWorker().research(
+            urls=urls, target_fields=target_fields, question=question
+        )
     except Exception as exc:  # noqa: BLE001
         result = {"worker": "web_research", "ok": False, "error": str(exc)}
     return base.dumps(result)
-
-

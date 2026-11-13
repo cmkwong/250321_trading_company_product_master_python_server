@@ -3,7 +3,8 @@
 This is the attribute half of the product-master agent, extracted into its own
 tool-calling agent so the manager can delegate attribute work to it.  It reads
 the master schema via the Node API, builds idempotent SQL through the dedicated
-builder tools, and never executes anything.
+builder tools, and never writes anything (the only SQL it may execute is a
+read-only SELECT via ``execute_select_query``).
 """
 
 from __future__ import annotations
@@ -25,6 +26,7 @@ from apps.core.services.AI.Tools.product_master_data_retrieve import (
     list_master_tables,
     read_master_schema_file,
     read_table_definition,
+    execute_select_query,
 )
 
 ATTRIBUTE_TOOLS = [
@@ -38,6 +40,7 @@ ATTRIBUTE_TOOLS = [
     build_category_attribute_assign_sql,
     build_create_attribute_sql,
     build_attribute_dropdown_sql,
+    execute_select_query,
 ]
 
 ALLOWED_ATTRIBUTE_TABLES = (
@@ -48,8 +51,9 @@ ALLOWED_ATTRIBUTE_TABLES = (
 
 ATTRIBUTE_SYSTEM_PROMPT = """You are a product-attribute analyst for a trading company.
 You create and assign product attributes against the product-master database
-(via the provided tools) and return a PLAN plus SQL text.  You NEVER run SQL
-and you NEVER write data; everything you output is text for a human to review.
+(via the provided tools) and return a PLAN plus SQL text.  You NEVER write data.
+The only SQL you may run is a read-only SELECT via `execute_select_query` (to
+verify ids / rows); every write SQL you output is text for a human to review.
 
 ## Data model (MySQL)
 - master_categories: id, name, description, description_trad_chinese, parent_id.
@@ -124,7 +128,7 @@ class ProductAttributesWorker:
     def _build_human_message(self, task: str) -> str:
         return (
             "Task:\n" + (task or "")
-            + "\n\nProduce the plan and SQL only. Do not execute anything and do not write data."
+            + "\n\nProduce the plan and SQL only. Do not write data; the only SQL you may execute is a read-only SELECT via `execute_select_query`."
         )
 
     @staticmethod

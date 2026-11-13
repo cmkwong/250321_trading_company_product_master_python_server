@@ -37,7 +37,9 @@ class CommandJob(models.Model):
     command = models.CharField(max_length=255)
     params = models.JSONField(default=dict)
     kind = models.CharField(max_length=16, default="sync")
-    status = models.CharField(max_length=16, choices=Status.choices, default=Status.PENDING)
+    status = models.CharField(
+        max_length=16, choices=Status.choices, default=Status.PENDING
+    )
     result = models.JSONField(default=dict, blank=True)
     log = models.TextField(blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
@@ -46,3 +48,27 @@ class CommandJob(models.Model):
 
     def __str__(self):
         return f"{self.command} ({self.status})"
+
+
+class NodeServiceAccount(models.Model):
+    """Credentials the Python server uses to obtain a JWT from the Node API.
+
+    The Node server owns authentication.  This row stores the email/password of a
+    Node user whose role is admin / system-admin / developer; they are exchanged
+    for a JWT via ``POST /trade_business/panel/auth/getToken``, which is cached in
+    ``token`` until ``token_expires_at``.
+    """
+
+    first_name = models.CharField(max_length=100, default="")
+    last_name = models.CharField(max_length=100, default="")
+    email = models.EmailField(unique=True)
+    password = models.CharField(max_length=255)  # replayable: sent to Node verbatim
+    role = models.CharField(max_length=50, blank=True)  # informational, set on login
+    token = models.TextField(blank=True, default="")
+    token_expires_at = models.DateTimeField(null=True, blank=True)
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return f"{self.first_name} {self.last_name} ({self.email})"

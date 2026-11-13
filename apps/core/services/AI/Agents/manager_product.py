@@ -22,12 +22,15 @@ from . import worker_base as _base
 from apps.core.services.AI.Agents.worker_product_name import rename_product_with_seo
 from apps.core.services.AI.Agents.worker_web_research import research_product_web
 from apps.core.services.AI.Agents.worker_product_price import define_product_price
-from apps.core.services.AI.Agents.worker_product_attributes import manage_product_attributes
+from apps.core.services.AI.Agents.worker_product_attributes import (
+    manage_product_attributes,
+)
 from apps.core.services.AI.Tools.product_master_data_retrieve import (
     list_master_tables,
     get_master_table_schema,
     fetch_category_tree,
     fetch_attribute_catalog,
+    execute_select_query,
 )
 
 
@@ -78,8 +81,9 @@ _INSERT_ALLOWED_TABLE = "master_product_category_attribute_assign"
 SYSTEM_PROMPT = """You are a product-maintenance analyst for a trading company.
 
 Your job is to read the product-master database (via the provided tools) and
-produce a maintenance PLAN plus SQL queries. You NEVER run SQL and you NEVER
-write data; everything you output is text for a human to review.
+produce a maintenance PLAN plus SQL queries. You NEVER write data. The only SQL
+you may run is a read-only SELECT via ``execute_select_query`` (to verify ids /
+rows); every write SQL you produce is text for a human to review.
 
 ## Data model (MySQL)
 - master_categories: id, name, description, description_trad_chinese, parent_id (self FK).
@@ -143,7 +147,9 @@ yourself:
 Call the right worker with the information the user supplied. Copy each worker
 result into your `worker_results` list and put every worker SQL statement into
 `drafts`. Never hand-write SQL that a worker should own. Workers never execute
-SQL; their output is text for human review only.
+SQL; their output is text for human review only. The only SQL you may execute
+yourself is a read-only SELECT via `execute_select_query`; use it to confirm ids
+or current rows before delegating or proposing changes.
 """
 
 
@@ -157,6 +163,7 @@ WORKER_TOOLS = [
     get_master_table_schema,
     fetch_category_tree,
     fetch_attribute_catalog,
+    execute_select_query,
 ]
 
 
@@ -228,7 +235,9 @@ def assert_plan_read_only(plan: ProductPlan) -> ProductPlan:
             continue
 
         if verb == "INSERT" and _INSERT_ALLOWED_TABLE not in statement:
-            risks.append(f"Removed INSERT outside {_INSERT_ALLOWED_TABLE}: {statement[:120]}")
+            risks.append(
+                f"Removed INSERT outside {_INSERT_ALLOWED_TABLE}: {statement[:120]}"
+            )
             continue
 
         if statement.strip() or step.get("purpose") or step.get("verification"):
@@ -353,6 +362,17 @@ class ProductMasterAgent:
         images: Optional[List[str]] = None,
         context: Optional[Dict[str, Any]] = None,
     ) -> str:
+        """
+        Build the human-readable message to send to the agent.
+        Args:
+            task: The main task description.
+            links: Optional list of product links.
+            images: Optional list of product image paths or data URLs.
+            context: Optional additional context as a dictionary.
+
+        Returns:
+            A formatted string message to send to the agent.
+        """
         lines = ["Task:", task or ""]
         if links:
             lines.append("\nProduct links (1688):")
@@ -381,7 +401,11 @@ class ProductMasterAgent:
                     content = getattr(message, "content", "") or ""
                     if isinstance(content, list):
                         content = "".join(
-                            str(part) if isinstance(part, str) else str(part.get("text", ""))
+                            (
+                                str(part)
+                                if isinstance(part, str)
+                                else str(part.get("text", ""))
+                            )
                             for part in content
                         )
                     text = str(content)
@@ -425,7 +449,11 @@ class ProductMasterAgent:
         """Run the agent and return a normalised, read-only-guarded plan."""
         agent = self._get_agent()
         result = agent.invoke(
-            {"messages": [("human", self._build_human_message(task, links, images, context))]},
+            {
+                "messages": [
+                    ("human", self._build_human_message(task, links, images, context))
+                ]
+            },
             config={"recursion_limit": self.recursion_limit},
         )
         return self._parse_result(result)
@@ -447,7 +475,11 @@ class ProductMasterAgent:
         (both otherwise produce no events and read as a hang).
         """
         agent = self._get_agent()
-        inp = {"messages": [("human", self._build_human_message(task, links, images, context))]}
+        inp = {
+            "messages": [
+                ("human", self._build_human_message(task, links, images, context))
+            ]
+        }
         last_state: Dict[str, Any] = {}
         announced = set()
         q = queue.Queue()
@@ -530,6 +562,3 @@ if __name__ == "__main__":
                 print(f"\n[ERROR] {event['error']}", flush=True)
             elif event["type"] == "plan":
                 print("\n\n" + event["text"])
-
-
-
