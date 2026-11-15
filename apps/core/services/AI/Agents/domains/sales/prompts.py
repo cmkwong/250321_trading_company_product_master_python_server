@@ -1,65 +1,6 @@
-"""Sales-domain manager agent (LangChain + Ollama qwen3.5).
-
-Handles sales-side requests against the ``sales_*`` tables (quotations,
-documents, packing, shipping, prices) plus the master lookup tables.  It reuses
-the shared turn engine, conversation memory and guardrails from
-:mod:`apps.core.services.AI.Agents.manager_general` and supplies its own prompt
-and tools.  ``build_sales_sql`` is a thin sales-flavoured wrapper over the
-shared SQL-builder worker.
-"""
+"""Sales-domain prompt text (text only)."""
 
 from __future__ import annotations
-
-from typing import List, Optional
-
-from langchain.tools import tool
-
-from apps.core.services.AI.Agents import worker_base as _base
-from apps.core.services.AI.Agents.manager_general import DomainManagerAgent
-from apps.core.services.AI.Agents.worker_product_sql_builder import ProductSqlBuilderWorker
-from apps.core.services.AI.Tools.act_tools import ACT_TOOLS as _ACT_TOOLS
-from apps.core.services.AI.Tools.plan_tools import (
-    build_insert_sql,
-    build_update_sql,
-    execute_select_query,
-    fetch_master_rows,
-    fetch_web_content,
-    get_master_table_schema,
-    list_master_tables,
-    read_table_definition,
-    search_web,
-)
-
-
-@tool
-def build_sales_sql(
-    question: str,
-    tables: Optional[List[str]] = None,
-    execute: bool = True,
-) -> str:
-    """Turn a sales business question into ONE read-only SELECT, run it when every
-    table is queryable, and return the rows + SQL. Use for questions that need
-    joins, counts, grouping or comparisons across sales/master tables."""
-    try:
-        result = ProductSqlBuilderWorker().plan(question, tables=tables, execute=execute)
-    except Exception as exc:  # noqa: BLE001
-        result = {"worker": "sales_sql_builder", "ok": False, "error": str(exc)}
-    return _base.dumps(result)
-
-
-SALES_TOOLS = [
-    list_master_tables,
-    get_master_table_schema,
-    read_table_definition,
-    fetch_master_rows,
-    execute_select_query,
-    build_insert_sql,
-    build_update_sql,
-    build_sales_sql,
-    fetch_web_content,
-    search_web,
-]
-
 
 SALES_SYSTEM_PROMPT = """You are the sales assistant for a trading company.
 
@@ -153,22 +94,4 @@ Return exactly ONE JSON object (no prose outside it) with:
 - risks: warnings or assumptions.
 """
 
-
-class SalesManagerAgent(DomainManagerAgent):
-    """Sales-domain manager: sales tools and prompts."""
-
-    PLAN_TOOLS = SALES_TOOLS
-    ACT_TOOLS = _ACT_TOOLS
-    PLAN_PROMPT = SALES_SYSTEM_PROMPT
-    ACT_PROMPT = SALES_ACT_SYSTEM_PROMPT
-
-
-__all__ = [
-    "SALES_SYSTEM_PROMPT",
-    "SALES_ACT_SYSTEM_PROMPT",
-    "SALES_TOOLS",
-    "build_sales_sql",
-    "SalesManagerAgent",
-]
-
-
+__all__ = ["SALES_SYSTEM_PROMPT", "SALES_ACT_SYSTEM_PROMPT"]

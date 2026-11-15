@@ -4,7 +4,7 @@ These tools read the product-master database (via the Node server) or the
 server's schema modules on disk, draft write SQL as *text* for human review,
 run read-only SELECT queries, and fetch/search the web.  Nothing here writes
 data -- every INSERT/UPDATE the tools draft is returned as text to be executed
-later via ``/act`` mode (:mod:`apps.core.services.AI.Tools.act_tools`).
+later via ``/act`` mode (:mod:`Agents.core.act_tools`).
 """
 
 from __future__ import annotations
@@ -18,18 +18,21 @@ from bs4 import BeautifulSoup
 from langchain_core.tools import tool
 
 from apps.core import config
-from . import utils
+from . import settings
+from .contracts import MasterApiError, _tool_error
+from . import master_api, schema_catalog, sql as sqlguard, web
+
 
 @tool
 def list_master_tables() -> str:
     """List the master table names available via the Node API (names only, no schema)."""
     try:
-        data = utils._api_get("/trade_business/panel/master/schema")
-    except utils.MasterApiError as exc:
-        return utils._tool_error(exc)
+        data = master_api._api_get("/trade_business/panel/master/schema")
+    except MasterApiError as exc:
+        return _tool_error(exc)
     schemas = data.get("schemas", {})
     names = sorted(schemas.keys()) if isinstance(schemas, dict) else []
-    allowed = [n for n in names if n in utils.ai_settings().QUERY_ALLOWED_TABLES]
+    allowed = [n for n in names if n in settings.QUERY_ALLOWED_TABLES]
     return json.dumps(
         {"ok": True, "readable_tables": allowed},
         ensure_ascii=False,
@@ -40,10 +43,10 @@ def list_master_tables() -> str:
 def get_master_table_schema(table_name: str) -> str:
     """Return the field schema (type, notNull, references) for one master table."""
     try:
-        table_name = utils._check_table(table_name)
-        data = utils._api_get(f"/trade_business/panel/master/schema/{table_name}")
-    except utils.MasterApiError as exc:
-        return utils._tool_error(exc)
+        table_name = master_api._check_table(table_name)
+        data = master_api._api_get(f"/trade_business/panel/master/schema/{table_name}")
+    except MasterApiError as exc:
+        return _tool_error(exc)
 
     schema = data.get("schema") or data.get("schemas", {}).get(table_name, {})
     fields = schema.get("fields", {})
@@ -64,12 +67,12 @@ def get_master_table_schema(table_name: str) -> str:
 def fetch_master_rows(table_name: str, limit: int = 100) -> str:
     """Fetch up to `limit` rows from one master table (timestamps omitted)."""
     try:
-        rows = utils._rows(table_name)
-        cleaned = utils._compact(rows, limit=limit)
+        rows = master_api._rows(table_name)
+        cleaned = master_api._compact(rows, limit=limit)
         for row in cleaned:
-            utils._normalise_bool(table_name, row)
-    except utils.MasterApiError as exc:
-        return utils._tool_error(exc)
+            master_api._normalise_bool(table_name, row)
+    except MasterApiError as exc:
+        return _tool_error(exc)
     return json.dumps(
         {"ok": True, "table": table_name, "rows": cleaned, "total": len(rows)},
         ensure_ascii=False,
@@ -80,9 +83,9 @@ def fetch_master_rows(table_name: str, limit: int = 100) -> str:
 def fetch_category_tree() -> str:
     """Fetch every master_categories row and render it as an indented tree with ids."""
     try:
-        rows = utils._rows("master_categories")
-    except utils.MasterApiError as exc:
-        return utils._tool_error(exc)
+        rows = master_api._rows("master_categories")
+    except MasterApiError as exc:
+        return _tool_error(exc)
 
     by_id: Dict[str, Dict[str, Any]] = {str(r.get("id")): r for r in rows}
     depth_cache: Dict[str, int] = {}
@@ -117,9 +120,9 @@ def fetch_category_tree() -> str:
 def fetch_attribute_catalog() -> str:
     """Fetch every master_product_attributes row (name, label, multiple_selection, id)."""
     try:
-        rows = utils._rows("master_product_attributes")
-    except utils.MasterApiError as exc:
-        return utils._tool_error(exc)
+        rows = master_api._rows("master_product_attributes")
+    except MasterApiError as exc:
+        return _tool_error(exc)
 
     lines = []
     for row in sorted(rows, key=lambda r: str(r.get("name", "")).lower()):
@@ -127,15 +130,17 @@ def fetch_attribute_catalog() -> str:
             f"{row.get('name')} | label={row.get('label') or ''}"
             f" | multiple={bool(row.get('multiple_selection'))}"
         )
-    return json.dumps({"ok": True, "count": len(rows), "attributes": lines}, ensure_ascii=False)
+    return json.dumps(
+        {"ok": True, "count": len(rows), "attributes": lines}, ensure_ascii=False
+    )
 
 
 @tool
 def fetch_attribute_assignments(category: str, summarize: bool = False) -> str:
     """List attributes already assigned to a category (by name or id). Pass summarize=True for a compact list of names."""
     try:
-        categories = utils._rows("master_categories")
-        cat, candidates = utils._resolve(categories, "id", "name", category)
+        categories = master_api._rows("master_categories")
+        cat, candidates = master_api._resolve(categories, "id", "name", category)
         if cat is None:
             return json.dumps(
                 {
@@ -146,8 +151,8 @@ def fetch_attribute_assignments(category: str, summarize: bool = False) -> str:
                 ensure_ascii=False,
             )
 
-        assigns = utils._rows("master_product_category_attribute_assign")
-        attributes = utils._rows("master_product_attributes")
+        assigns = master_api._rows("master_product_category_attribute_assign")
+        attributes = master_api._rows("master_product_attributes")
         attr_by_id = {str(a.get("id")): a for a in attributes}
 
         cat_assigns = [
@@ -163,8 +168,8 @@ def fetch_attribute_assignments(category: str, summarize: bool = False) -> str:
                     "attribute_id": a.get("attribute_id"),
                 }
             )
-    except utils.MasterApiError as exc:
-        return utils._tool_error(exc)
+    except MasterApiError as exc:
+        return _tool_error(exc)
 
     if summarize:
         names = sorted({r["attribute_name"] for r in resolved})
@@ -199,29 +204,29 @@ def read_master_schema_file(file_name: str) -> str:
         name = (file_name or "").strip()
         if name.endswith(".js"):
             name = name[:-3]
-        if not utils.IDENTIFIER_RE.match(name):
-            raise utils.MasterApiError(
+        if not sqlguard.IDENTIFIER_RE.match(name):
+            raise MasterApiError(
                 f"Invalid schema file name: {file_name!r}",
                 hint="Provide a bare filename like 'master' or 'products'.",
             )
 
-        path = (utils.SCHEMA_DIR / f"{name}.js").resolve()
-        if utils.SCHEMA_DIR.resolve() not in path.parents:
-            raise utils.MasterApiError(
+        path = (schema_catalog.SCHEMA_DIR / f"{name}.js").resolve()
+        if schema_catalog.SCHEMA_DIR.resolve() not in path.parents:
+            raise MasterApiError(
                 f"Path escapes the schema directory: {name}",
                 hint="Provide a bare filename only.",
             )
         if not path.is_file():
-            raise utils.MasterApiError(
+            raise MasterApiError(
                 f"Schema file not found: {path}",
-                hint=f"Available under: {utils.SCHEMA_DIR}",
+                hint=f"Available under: {schema_catalog.SCHEMA_DIR}",
             )
 
         content = path.read_text(encoding="utf-8", errors="replace")
-        if len(content) > utils.MAX_FILE_CHARS:
-            content = content[: utils.MAX_FILE_CHARS] + "\n...[truncated]..."
-    except (utils.MasterApiError, OSError) as exc:
-        return utils._tool_error(exc)
+        if len(content) > schema_catalog.MAX_FILE_CHARS:
+            content = content[: schema_catalog.MAX_FILE_CHARS] + "\n...[truncated]..."
+    except (MasterApiError, OSError) as exc:
+        return _tool_error(exc)
 
     return json.dumps(
         {"ok": True, "file": path.name, "content": content},
@@ -232,7 +237,7 @@ def read_master_schema_file(file_name: str) -> str:
 @tool
 def read_table_definition(table_name: str) -> str:
     """Read a table's field definitions from the Node schema files (products/master). Returns field names and their types. Read-only."""
-    fields = utils.extract_table_fields(table_name)
+    fields = schema_catalog.extract_table_fields(table_name)
     if not fields:
         return json.dumps(
             {"ok": False, "error": f"table not found in schema files: {table_name}"},
@@ -247,10 +252,10 @@ def read_table_definition(table_name: str) -> str:
 def build_category_attribute_assign_sql(category: str, attributes: List[str]) -> str:
     """Build an idempotent MySQL INSERT..SELECT assigning attribute names to a category (name or id). Resolves ids, skips already-assigned pairs, and returns SQL plus verification statements. Read-only: nothing is executed."""
     try:
-        categories = utils._rows("master_categories")
-        all_attrs = utils._rows("master_product_attributes")
+        categories = master_api._rows("master_categories")
+        all_attrs = master_api._rows("master_product_attributes")
 
-        cat, cat_candidates = utils._resolve(categories, "id", "name", category)
+        cat, cat_candidates = master_api._resolve(categories, "id", "name", category)
         if cat is None:
             return json.dumps(
                 {
@@ -267,7 +272,7 @@ def build_category_attribute_assign_sql(category: str, attributes: List[str]) ->
             target = str(raw).strip()
             if not target:
                 continue
-            match, candidates = utils._resolve(all_attrs, "id", "name", target)
+            match, candidates = master_api._resolve(all_attrs, "id", "name", target)
             if match is not None:
                 matched.append(match)
             else:
@@ -284,7 +289,7 @@ def build_category_attribute_assign_sql(category: str, attributes: List[str]) ->
                 ensure_ascii=False,
             )
 
-        assigns = utils._rows("master_product_category_attribute_assign")
+        assigns = master_api._rows("master_product_category_attribute_assign")
         existing_ids = {
             str(a.get("attribute_id"))
             for a in assigns
@@ -294,9 +299,9 @@ def build_category_attribute_assign_sql(category: str, attributes: List[str]) ->
         already = [a["name"] for a in matched if str(a.get("id")) in existing_ids]
         to_add = [a for a in matched if str(a.get("id")) not in existing_ids]
 
-        cat_id = utils._sql_literal(cat.get("id"))
-        names_lit = ", ".join(utils._sql_literal(a["name"]) for a in to_add)
-        ids_lit = ", ".join(utils._sql_literal(a["id"]) for a in to_add)
+        cat_id = sqlguard._sql_literal(cat.get("id"))
+        names_lit = ", ".join(sqlguard._sql_literal(a["name"]) for a in to_add)
+        ids_lit = ", ".join(sqlguard._sql_literal(a["id"]) for a in to_add)
 
         if to_add:
             sql = (
@@ -304,12 +309,8 @@ def build_category_attribute_assign_sql(category: str, attributes: List[str]) ->
                 "(id, category_id, attribute_id)\n"
                 "SELECT UUID(), c.id, a.id\n"
                 "FROM master_categories AS c\n"
-                "JOIN master_product_attributes AS a ON a.name IN ("
-                + names_lit
-                + ")\n"
-                "WHERE c.id = "
-                + cat_id
-                + "\n"
+                "JOIN master_product_attributes AS a ON a.name IN (" + names_lit + ")\n"
+                "WHERE c.id = " + cat_id + "\n"
                 "  AND NOT EXISTS (\n"
                 "    SELECT 1 FROM master_product_category_attribute_assign AS x\n"
                 "    WHERE x.category_id = c.id AND x.attribute_id = a.id\n"
@@ -318,22 +319,24 @@ def build_category_attribute_assign_sql(category: str, attributes: List[str]) ->
             verification_before = (
                 "SELECT a.name AS attribute_name, a.id AS attribute_id\n"
                 "FROM master_categories c\n"
-                "JOIN master_product_attributes a ON a.name IN ("
-                + names_lit
-                + ")\n"
+                "JOIN master_product_attributes a ON a.name IN (" + names_lit + ")\n"
                 "WHERE c.id = " + cat_id + ";"
             )
             verification_after = (
                 "SELECT COUNT(*) AS assigned FROM master_product_category_attribute_assign\n"
-                "WHERE category_id = " + cat_id + " AND attribute_id IN (" + ids_lit + ");"
+                "WHERE category_id = "
+                + cat_id
+                + " AND attribute_id IN ("
+                + ids_lit
+                + ");"
             )
         else:
             sql = "-- nothing to insert: all requested attributes are already assigned"
             verification_before = "-- nothing to verify (no new rows)"
             verification_after = "-- nothing to verify (no new rows)"
 
-    except utils.MasterApiError as exc:
-        return utils._tool_error(exc)
+    except MasterApiError as exc:
+        return _tool_error(exc)
 
     return json.dumps(
         {
@@ -365,13 +368,16 @@ def build_create_attribute_sql(
     try:
         name = (name or "").strip()
         label = (label or "").strip() or name
-        if not utils.ATTRIBUTE_NAME_RE.match(name):
+        if not sqlguard.ATTRIBUTE_NAME_RE.match(name):
             return json.dumps(
-                {"ok": False, "error": f"invalid attribute name {name!r} (must be snake_case)"},
+                {
+                    "ok": False,
+                    "error": f"invalid attribute name {name!r} (must be snake_case)",
+                },
                 ensure_ascii=False,
             )
 
-        existing = utils._rows("master_product_attributes")
+        existing = master_api._rows("master_product_attributes")
         if any(str(a.get("name", "")) == name for a in existing):
             return json.dumps(
                 {
@@ -382,20 +388,20 @@ def build_create_attribute_sql(
                     "verification_before": "-- none",
                     "verification_after": (
                         f"SELECT COUNT(*) AS cnt FROM master_product_attributes "
-                        f"WHERE name = {utils._sql_literal(name)};"
+                        f"WHERE name = {sqlguard._sql_literal(name)};"
                     ),
                 },
                 ensure_ascii=False,
             )
 
         cols = ["id", "name", "label"]
-        vals = ["UUID()", utils._sql_literal(name), utils._sql_literal(label)]
+        vals = ["UUID()", sqlguard._sql_literal(name), sqlguard._sql_literal(label)]
         if description:
             cols.append("description")
-            vals.append(utils._sql_literal(description))
+            vals.append(sqlguard._sql_literal(description))
         if dropdown_reference:
             cols.append("dropdown_reference")
-            vals.append(utils._sql_literal(dropdown_reference))
+            vals.append(sqlguard._sql_literal(dropdown_reference))
         cols.append("multiple_selection")
         vals.append("1" if multiple_selection else "0")
         cols.append("catalog_default_display")
@@ -405,14 +411,12 @@ def build_create_attribute_sql(
             f"INSERT INTO master_product_attributes ({', '.join(cols)})\n"
             f"SELECT {', '.join(vals)}\n"
             f"WHERE NOT EXISTS (SELECT 1 FROM master_product_attributes "
-            f"WHERE name = {utils._sql_literal(name)});"
+            f"WHERE name = {sqlguard._sql_literal(name)});"
         )
-        verification_before = (
-            f"SELECT id, name FROM master_product_attributes WHERE name = {utils._sql_literal(name)};"
-        )
+        verification_before = f"SELECT id, name FROM master_product_attributes WHERE name = {sqlguard._sql_literal(name)};"
         verification_after = (
             f"SELECT COUNT(*) AS created FROM master_product_attributes "
-            f"WHERE name = {utils._sql_literal(name)};"
+            f"WHERE name = {sqlguard._sql_literal(name)};"
         )
         return json.dumps(
             {
@@ -424,20 +428,23 @@ def build_create_attribute_sql(
             },
             ensure_ascii=False,
         )
-    except utils.MasterApiError as exc:
-        return utils._tool_error(exc)
+    except MasterApiError as exc:
+        return _tool_error(exc)
 
 
 @tool
 def build_attribute_dropdown_sql(attribute: str, values: List[str]) -> str:
     """Build idempotent MySQL INSERTs adding dropdown values to an attribute. Read-only: nothing is executed."""
     try:
-        all_attrs = utils._rows("master_product_attributes")
-        attr, candidates = utils._resolve(all_attrs, "id", "name", attribute)
+        all_attrs = master_api._rows("master_product_attributes")
+        attr, candidates = master_api._resolve(all_attrs, "id", "name", attribute)
         if attr is None:
             return json.dumps(
-                {"ok": False, "error": f"attribute not found: {attribute!r}",
-                 "candidates": candidates},
+                {
+                    "ok": False,
+                    "error": f"attribute not found: {attribute!r}",
+                    "candidates": candidates,
+                },
                 ensure_ascii=False,
             )
 
@@ -448,18 +455,18 @@ def build_attribute_dropdown_sql(attribute: str, values: List[str]) -> str:
             value = str(raw).strip()
             if not value:
                 continue
-            val_lit = utils._sql_literal(value)
+            val_lit = sqlguard._sql_literal(value)
             stmt = (
                 "INSERT INTO master_product_attribute_dropdown (id, attribute_id, value)\n"
-                f"SELECT UUID(), {utils._sql_literal(attr_id)}, {val_lit}\n"
+                f"SELECT UUID(), {sqlguard._sql_literal(attr_id)}, {val_lit}\n"
                 "WHERE NOT EXISTS (SELECT 1 FROM master_product_attribute_dropdown "
-                f"WHERE attribute_id = {utils._sql_literal(attr_id)} AND value = {val_lit});"
+                f"WHERE attribute_id = {sqlguard._sql_literal(attr_id)} AND value = {val_lit});"
             )
             statements.append({"value": value, "sql": stmt})
 
         verification_before = (
             "SELECT value FROM master_product_attribute_dropdown "
-            f"WHERE attribute_id = {utils._sql_literal(attr_id)};"
+            f"WHERE attribute_id = {sqlguard._sql_literal(attr_id)};"
         )
         return json.dumps(
             {
@@ -471,8 +478,8 @@ def build_attribute_dropdown_sql(attribute: str, values: List[str]) -> str:
             },
             ensure_ascii=False,
         )
-    except utils.MasterApiError as exc:
-        return utils._tool_error(exc)
+    except MasterApiError as exc:
+        return _tool_error(exc)
 
 
 @tool
@@ -485,17 +492,17 @@ def execute_select_query(query: str, limit: int = 100) -> str:
     existing rows / ids before proposing changes; never to write data.
     """
     try:
-        sql = utils.assert_select_only(query)
-        utils._assert_allowed_tables(utils._mask_quoted(sql))
+        sql = sqlguard.assert_select_only(query)
+        sqlguard._assert_allowed_tables(sqlguard._mask_quoted(sql))
 
-        cap = max(1, min(int(limit or 100), utils.AI_MAX_ROWS))
-        sql = utils.ensure_limit(sql, cap)
+        cap = max(1, min(int(limit or 100), master_api.AI_MAX_ROWS))
+        sql = sqlguard.ensure_limit(sql, cap)
 
-        data = utils._api_post(utils.SELECT_QUERY_PATH, {"query": sql})
+        data = master_api._api_post(master_api.SELECT_QUERY_PATH, {"query": sql})
         payload = data.get("data") or {}
         rows = payload.get("rows")
         if not isinstance(rows, list):
-            raise utils.MasterApiError(
+            raise MasterApiError(
                 "Unexpected 'data.rows' payload.",
                 hint="The Node API did not return a list of rows.",
             )
@@ -513,8 +520,10 @@ def execute_select_query(query: str, limit: int = 100) -> str:
             },
             ensure_ascii=False,
         )
-    except Exception as exc:  # noqa: BLE001 - render any failure as a stable JSON string
-        return utils._tool_error(exc)
+    except (
+        Exception
+    ) as exc:  # noqa: BLE001 - render any failure as a stable JSON string
+        return _tool_error(exc)
 
 
 def _quote_write_value(value: Any) -> str:
@@ -524,7 +533,7 @@ def _quote_write_value(value: Any) -> str:
         return "NULL"
     if isinstance(value, (int, float)):
         return str(value)
-    return utils._sql_literal(value)
+    return sqlguard._sql_literal(value)
 
 
 @tool
@@ -532,32 +541,34 @@ def build_insert_sql(table: str, values: Dict[str, Any]) -> str:
     """Draft ONE INSERT for a write-allowed master table. Returns SQL text for review in /plan mode; nothing is executed. Columns are validated against the Node schema files."""
     try:
         table = (table or "").strip()
-        write_tables = utils.ai_settings().WRITE_ALLOWED_TABLES
+        write_tables = settings.WRITE_ALLOWED_TABLES
         if table not in write_tables:
-            raise utils.MasterApiError(
+            raise MasterApiError(
                 f"Table not allowed for writing: {table}",
                 hint=f"Allowed tables: {', '.join(write_tables)}",
             )
-        fields = utils.extract_table_fields(table) or {}
+        fields = schema_catalog.extract_table_fields(table) or {}
         if not fields:
-            raise utils.MasterApiError(
+            raise MasterApiError(
                 f"schema not found for {table}", hint="Check the table name."
             )
-        values = {str(k).strip(): v for k, v in (values or {}).items() if str(k).strip()}
+        values = {
+            str(k).strip(): v for k, v in (values or {}).items() if str(k).strip()
+        }
         if not values:
-            raise utils.MasterApiError(
+            raise MasterApiError(
                 "no values provided", hint="Pass at least one column: value pair."
             )
         unknown = [k for k in values if k not in fields]
         if unknown:
-            raise utils.MasterApiError(
+            raise MasterApiError(
                 f"unknown columns for {table}: {', '.join(unknown)}",
                 hint=f"Known fields: {', '.join(fields.keys())}",
             )
         cols = list(values.keys())
         vals = [_quote_write_value(values[c]) for c in cols]
         sql = f"INSERT INTO {table} ({', '.join(cols)})\nVALUES ({', '.join(vals)});"
-        utils.assert_write_only(sql, verbs=("INSERT",))
+        sqlguard.assert_write_only(sql, verbs=("INSERT",))
         return json.dumps(
             {
                 "ok": True,
@@ -569,8 +580,8 @@ def build_insert_sql(table: str, values: Dict[str, Any]) -> str:
             },
             ensure_ascii=False,
         )
-    except utils.MasterApiError as exc:
-        return utils._tool_error(exc)
+    except MasterApiError as exc:
+        return _tool_error(exc)
 
 
 @tool
@@ -578,35 +589,41 @@ def build_update_sql(table: str, set_values: Dict[str, Any], where: str = "") ->
     """Draft ONE UPDATE for a write-allowed master table. `where` is required (no full-table updates). Returns SQL text for review; nothing is executed."""
     try:
         table = (table or "").strip()
-        write_tables = utils.ai_settings().WRITE_ALLOWED_TABLES
+        write_tables = settings.WRITE_ALLOWED_TABLES
         if table not in write_tables:
-            raise utils.MasterApiError(
+            raise MasterApiError(
                 f"Table not allowed for writing: {table}",
                 hint=f"Allowed tables: {', '.join(write_tables)}",
             )
-        fields = utils.extract_table_fields(table) or {}
+        fields = schema_catalog.extract_table_fields(table) or {}
         if not fields:
-            raise utils.MasterApiError(
+            raise MasterApiError(
                 f"schema not found for {table}", hint="Check the table name."
             )
-        set_values = {str(k).strip(): v for k, v in (set_values or {}).items() if str(k).strip()}
+        set_values = {
+            str(k).strip(): v for k, v in (set_values or {}).items() if str(k).strip()
+        }
         if not set_values:
-            raise utils.MasterApiError("no set_values provided", hint="Pass columns to update.")
+            raise MasterApiError(
+                "no set_values provided", hint="Pass columns to update."
+            )
         unknown = [k for k in set_values if k not in fields]
         if unknown:
-            raise utils.MasterApiError(
+            raise MasterApiError(
                 f"unknown columns for {table}: {', '.join(unknown)}",
                 hint=f"Known fields: {', '.join(fields.keys())}",
             )
         where = (where or "").strip()
         if not where:
-            raise utils.MasterApiError(
+            raise MasterApiError(
                 "UPDATE requires a WHERE clause",
                 hint="Provide a `where` condition to avoid a full-table update.",
             )
-        sets = ", ".join(f"{c} = {_quote_write_value(set_values[c])}" for c in set_values)
+        sets = ", ".join(
+            f"{c} = {_quote_write_value(set_values[c])}" for c in set_values
+        )
         sql = f"UPDATE {table}\nSET {sets}\nWHERE {where};"
-        utils.assert_write_only(sql, verbs=("UPDATE",))
+        sqlguard.assert_write_only(sql, verbs=("UPDATE",))
         return json.dumps(
             {
                 "ok": True,
@@ -618,8 +635,8 @@ def build_update_sql(table: str, set_values: Dict[str, Any], where: str = "") ->
             },
             ensure_ascii=False,
         )
-    except utils.MasterApiError as exc:
-        return utils._tool_error(exc)
+    except MasterApiError as exc:
+        return _tool_error(exc)
 
 
 @tool
@@ -628,20 +645,26 @@ def fetch_web_content(url: str, format: str = "text", max_chars: int = 0) -> str
     try:
         fmt = (format or "text").strip().lower()
         if fmt not in ("text", "html"):
-            raise utils.MasterApiError(
+            raise MasterApiError(
                 f"unsupported format {format!r}", hint="Use 'text' or 'html'."
             )
-        cap = int(max_chars) if max_chars else utils.WEB_FETCH_MAX_CHARS
+        cap = int(max_chars) if max_chars else web.WEB_FETCH_MAX_CHARS
         if fmt == "html":
-            content = utils.fetch_html(url, max_chars=cap)
+            content = web.fetch_html(url, max_chars=cap)
         else:
-            content = utils.fetch_text(url, max_chars=cap)
+            content = web.fetch_text(url, max_chars=cap)
         return json.dumps(
-            {"ok": True, "url": url, "format": fmt, "chars": len(content), "content": content},
+            {
+                "ok": True,
+                "url": url,
+                "format": fmt,
+                "chars": len(content),
+                "content": content,
+            },
             ensure_ascii=False,
         )
     except Exception as exc:  # noqa: BLE001
-        return utils._tool_error(exc)
+        return _tool_error(exc)
 
 
 _DDG_ENDPOINT = "https://html.duckduckgo.com/html/"
@@ -651,23 +674,31 @@ _DDG_ENDPOINT = "https://html.duckduckgo.com/html/"
 def search_web(query: str, max_results: int = 5) -> str:
     """Search the web via DuckDuckGo and return [{title, url, snippet}]. Best-effort scraping with no API key; rate limits return ok:false with a hint."""
     try:
-        provider = str(config.get("AI_WEB_SEARCH_PROVIDER", "duckduckgo")).strip().lower()
+        provider = (
+            str(config.get("AI_WEB_SEARCH_PROVIDER", "duckduckgo")).strip().lower()
+        )
         if provider in ("none", "off", "0", ""):
             return json.dumps(
-                {"ok": False, "error": "web search disabled",
-                 "hint": "Set AI_WEB_SEARCH_PROVIDER=duckduckgo to enable."},
+                {
+                    "ok": False,
+                    "error": "web search disabled",
+                    "hint": "Set AI_WEB_SEARCH_PROVIDER=duckduckgo to enable.",
+                },
                 ensure_ascii=False,
             )
         if provider != "duckduckgo":
             return json.dumps(
-                {"ok": False, "error": f"unknown provider {provider!r}",
-                 "hint": "Supported providers: duckduckgo (default) or none."},
+                {
+                    "ok": False,
+                    "error": f"unknown provider {provider!r}",
+                    "hint": "Supported providers: duckduckgo (default) or none.",
+                },
                 ensure_ascii=False,
             )
 
         q = (query or "").strip()
         if not q:
-            raise utils.MasterApiError("empty query", hint="Provide a search term.")
+            raise MasterApiError("empty query", hint="Provide a search term.")
         max_results = max(1, min(int(max_results or 5), 10))
 
         session = requests.Session()
@@ -676,12 +707,15 @@ def search_web(query: str, max_results: int = 5) -> str:
             _DDG_ENDPOINT,
             params={"q": q},
             headers={"User-Agent": "Mozilla/5.0"},
-            timeout=utils.REQUEST_TIMEOUT,
+            timeout=master_api.REQUEST_TIMEOUT,
         )
         if resp.status_code in (202, 429, 403):
             return json.dumps(
-                {"ok": False, "error": "rate_limited",
-                 "hint": "DuckDuckGo rate-limited the request; retry later."},
+                {
+                    "ok": False,
+                    "error": "rate_limited",
+                    "hint": "DuckDuckGo rate-limited the request; retry later.",
+                },
                 ensure_ascii=False,
             )
         resp.raise_for_status()
@@ -695,23 +729,36 @@ def search_web(query: str, max_results: int = 5) -> str:
             a = el.select_one("a.result__a")
             if a is None:
                 continue
-            snippet_el = el.select_one("a.result__snippet") or el.select_one(".result__snippet")
+            snippet_el = el.select_one("a.result__snippet") or el.select_one(
+                ".result__snippet"
+            )
             href = a.get("href") or ""
             url = href
             if "duckduckgo.com/l/" in href:
                 uddg = parse_qs(urlparse(href).query).get("uddg")
                 if uddg:
                     url = uddg[0]
-            results.append({
-                "title": " ".join(a.get_text(separator=" ").split()),
-                "url": url,
-                "snippet": " ".join(snippet_el.get_text(separator=" ").split()) if snippet_el else "",
-            })
+            results.append(
+                {
+                    "title": " ".join(a.get_text(separator=" ").split()),
+                    "url": url,
+                    "snippet": (
+                        " ".join(snippet_el.get_text(separator=" ").split())
+                        if snippet_el
+                        else ""
+                    ),
+                }
+            )
         results = results[:max_results]
         if not results:
             return json.dumps(
-                {"ok": True, "query": q, "results": [], "count": 0,
-                 "hint": "No results found (or DuckDuckGo changed its HTML)."},
+                {
+                    "ok": True,
+                    "query": q,
+                    "results": [],
+                    "count": 0,
+                    "hint": "No results found (or DuckDuckGo changed its HTML).",
+                },
                 ensure_ascii=False,
             )
         return json.dumps(
@@ -719,7 +766,7 @@ def search_web(query: str, max_results: int = 5) -> str:
             ensure_ascii=False,
         )
     except Exception as exc:  # noqa: BLE001
-        return utils._tool_error(exc)
+        return _tool_error(exc)
 
 
 PLAN_TOOLS = [
@@ -740,11 +787,3 @@ PLAN_TOOLS = [
     fetch_web_content,
     search_web,
 ]
-
-
-
-
-
-
-
-

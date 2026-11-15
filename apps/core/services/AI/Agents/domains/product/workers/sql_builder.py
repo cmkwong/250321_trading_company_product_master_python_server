@@ -19,10 +19,18 @@ from typing import Any, Dict, List, Optional, Union
 from langchain.agents import create_agent
 from langchain_core.tools import tool
 
-from . import worker_base as base
-from .settings import SQL_BUILDER_NUM_CTX
-from apps.core.services.AI.Tools import utils
-from apps.core.services.AI.Tools.plan_tools import execute_select_query
+from apps.core.services.AI.Agents.core.guardrail import assert_draft_sql
+from apps.core.services.AI.Agents.core.llm import DEFAULT_MODEL, build_llm
+from apps.core.services.AI.Agents.core.streaming import stream_agent
+from apps.core.services.AI.Agents.core import settings
+from apps.core.services.AI.Agents.core import contracts
+from apps.core.services.AI.Agents.core import schema_catalog, sql
+from apps.core.services.AI.Agents.core.plan_tools import execute_select_query
+from apps.core.services.AI.Agents.core.schemas import (
+    BuildSqlInput,
+    _bool_like,
+    _csv_to_list,
+)
 
 # Tables whose compact schema is injected into the prompt (the ones nearly every
 # product question joins through).  Everything else is one `describe_tables` call
@@ -44,29 +52,16 @@ CORE_TABLES = (
 MAX_DESCRIBE_TABLES = 12
 
 
+# ``tables`` / ``execute`` argument coercion now lives in Agents/schemas.py
+# (``_csv_to_list`` / ``_bool_like``), declared once on the tool's args_schema.
+# These thin aliases keep the internal ``plan()`` / ``stream()`` call sites and
+# the ``_e2e_check.py`` dev script working against the single implementation.
 def _normalise_tables(tables: Any) -> Optional[List[str]]:
-    """Coerce the ``tables`` hint into a clean list of names.
-
-    The manager's model frequently passes a single comma-separated string (which
-    Pydantic otherwise rejects), so accept both forms and drop blanks/placeholders.
-    """
-    if tables is None:
-        return None
-    if isinstance(tables, str):
-        names = [part.strip() for part in tables.split(",")]
-    elif isinstance(tables, (list, tuple)):
-        names = [str(part).strip() for part in tables]
-    else:
-        return None
-    names = [n for n in names if n and n.lower() not in ("all", "*", "none")]
-    return names or None
+    return _csv_to_list(tables)
 
 
 def _normalise_execute(execute: Any) -> bool:
-    """Coerce a possibly-string ``execute`` flag to a boolean."""
-    if isinstance(execute, str):
-        return execute.strip().lower() not in ("false", "0", "no", "off", "none", "")
-    return bool(execute)
+    return _bool_like(execute)
 
 
 def _row_label(row: Any) -> str:
@@ -110,9 +105,9 @@ def describe_tables(tables: str) -> str:
                 },
                 ensure_ascii=False,
             )
-        known = utils.load_schema_catalog()
+        known = schema_catalog.load_schema_catalog()
         unknown = [n for n in names if n not in known]
-        text = utils.render_schema_catalog(names)
+        text = schema_catalog.render_schema_catalog(names)
         return json.dumps(
             {
                 "ok": True,
@@ -123,7 +118,7 @@ def describe_tables(tables: str) -> str:
             ensure_ascii=False,
         )
     except Exception as exc:  # noqa: BLE001
-        return utils._tool_error(exc)
+        return contracts._tool_error(exc)
 
 
 SQL_BUILDER_TOOLS = [describe_tables, execute_select_query]
@@ -177,7 +172,7 @@ one, still write the SQL and say so in missing_data.
   execute, prepare, deallocate, set, use, lock, unlock, handler, load, outfile,
   dumpfile, into, sleep, benchmark, get_lock, release_lock.
 
-## Output contract — exactly ONE JSON object (no prose, no fences)
+## Output contract ??exactly ONE JSON object (no prose, no fences)
 - answer: the direct reply (count + values, or "none"), in the user's language.
 - summary: one short sentence describing the query.
 - sql: list of {{purpose, statement, verification}} (usually one SELECT).
@@ -189,16 +184,16 @@ one, still write the SQL and say so in missing_data.
 
 
 def _system_prompt() -> str:
-    allow = utils.ai_settings().QUERY_ALLOWED_TABLES
+    allow = settings.QUERY_ALLOWED_TABLES
     return SQL_BUILDER_SYSTEM_PROMPT.format(
         table_index="\n".join(f"- {t}" for t in allow),
-        core_schemas=utils.render_schema_catalog(CORE_TABLES),
+        core_schemas=schema_catalog.render_schema_catalog(CORE_TABLES),
     )
 
 
 def _tables_in_sql(statement: str) -> List[str]:
-    masked = utils._mask_quoted(statement or "")
-    return sorted(set(utils._TABLE_RE.findall(masked)))
+    masked = sql._mask_quoted(statement or "")
+    return sorted(set(sql._TABLE_RE.findall(masked)))
 
 
 class ProductSqlBuilderWorker:
@@ -211,11 +206,11 @@ class ProductSqlBuilderWorker:
         recursion_limit: int = 12,
         llm: Any = None,
     ) -> None:
-        self.model = model or base.DEFAULT_MODEL
+        self.model = model or DEFAULT_MODEL
         self.temperature = temperature
         self.recursion_limit = recursion_limit
-        self.llm = llm or base.build_llm(
-            self.model, temperature=temperature, num_ctx=SQL_BUILDER_NUM_CTX
+        self.llm = llm or build_llm(
+            self.model, temperature=temperature, num_ctx=settings.SQL_BUILDER_NUM_CTX
         )
         self._agent = None
 
@@ -258,11 +253,11 @@ class ProductSqlBuilderWorker:
         return {
             "answer": str(plan.get("answer", "")),
             "summary": str(plan.get("summary", "")),
-            "plan": base.as_str_list(plan.get("plan")),
-            "sql": base.as_sql_list(plan.get("sql")),
-            "tables_used": base.as_str_list(plan.get("tables_used")),
-            "missing_data": base.as_str_list(plan.get("missing_data")),
-            "risks": base.as_str_list(plan.get("risks")),
+            "plan": contracts.as_str_list(plan.get("plan")),
+            "sql": contracts.as_sql_list(plan.get("sql")),
+            "tables_used": contracts.as_str_list(plan.get("tables_used")),
+            "missing_data": contracts.as_str_list(plan.get("missing_data")),
+            "risks": contracts.as_str_list(plan.get("risks")),
         }
 
     @staticmethod
@@ -278,7 +273,7 @@ class ProductSqlBuilderWorker:
                     str(p) if isinstance(p, str) else str(p.get("text", ""))
                     for p in content
                 )
-            data = base.extract_json_block(str(content))
+            data = contracts.extract_json_block(str(content))
             if (
                 isinstance(data, dict)
                 and data.get("ok")
@@ -312,7 +307,7 @@ class ProductSqlBuilderWorker:
             return norm
 
         raw = execute_select_query.invoke({"query": statement})
-        data = base.extract_json_block(str(raw))
+        data = contracts.extract_json_block(str(raw))
         if not isinstance(data, dict):
             data = {}
 
@@ -361,7 +356,7 @@ class ProductSqlBuilderWorker:
                     text = str(content)
                     if text.strip():
                         break
-            structured = base.extract_json_block(text)
+            structured = contracts.extract_json_block(text)
 
         if structured is None:
             return {
@@ -382,11 +377,11 @@ class ProductSqlBuilderWorker:
             }
 
         norm = self._normalise(structured)
-        safe, risks = base.assert_draft_sql(norm["sql"], ())
+        safe, risks = assert_draft_sql(norm["sql"], ())
         norm["sql"] = safe
         norm["risks"] = list(norm["risks"]) + risks
 
-        allowed = set(utils.ai_settings().QUERY_ALLOWED_TABLES)
+        allowed = set(settings.QUERY_ALLOWED_TABLES)
         tables_used = list(norm["tables_used"])
         seen = set(tables_used)
         for step in safe:
@@ -400,7 +395,7 @@ class ProductSqlBuilderWorker:
             if table not in allowed:
                 norm["missing_data"].append(
                     f"`{table}` is outside AI_QUERY_TABLES; the SQL was drafted but "
-                    "not executed. Add it to Agents/settings.py (or AI_QUERY_TABLES) "
+                    "not executed. Add it to Agents/core/settings.py (or AI_QUERY_TABLES) "
                     "to run it."
                 )
 
@@ -454,9 +449,7 @@ class ProductSqlBuilderWorker:
             ]
         }
         last_state: Dict[str, Any] = {}
-        for event in base.stream_agent(
-            agent, inp, recursion_limit=self.recursion_limit
-        ):
+        for event in stream_agent(agent, inp, recursion_limit=self.recursion_limit):
             if event["type"] == "_done":
                 last_state = event["state"]
                 break
@@ -479,11 +472,11 @@ def _format_sql(result: Dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-@tool
+@tool(args_schema=BuildSqlInput)
 def build_product_sql(
     question: str,
-    tables: Optional[Union[List[str], str]] = None,
-    execute: bool = True,
+    tables=None,
+    execute=True,
 ) -> str:
     """Turn a product-master business question into ONE read-only SELECT, run it when
     every table is queryable, and return the rows + SQL. Use for questions that need
@@ -498,4 +491,4 @@ def build_product_sql(
         )
     except Exception as exc:  # noqa: BLE001
         result = {"worker": "product_sql_builder", "ok": False, "error": str(exc)}
-    return base.dumps(result)
+    return contracts.dump_worker_result(result)

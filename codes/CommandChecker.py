@@ -47,14 +47,14 @@ def _stream_turn(agent, task, domain=None):
 def _interactive_repl(checker, agent, prompt, title):
     """Run the interactive multi-turn REPL for a general manager agent.
 
-    The loop lives here (it owns ``input``/``print``); command parsing and the
-    act execution live on the agent / :mod:`manager_general`.
+    The loop lives here (it owns ``input``/``print``); command parsing lives in
+    :mod:`core.router` and act execution on the agent.
     """
-    from apps.core.services.AI.Agents.manager_general import (
+    from apps.core.services.AI.Agents.core.engine import (
         assert_plan_sql,
         format_plan,
-        parse_command,
     )
+    from apps.core.services.AI.Agents.core.router import parse_command
     from apps.core import config
 
     # command_check leaves COMMAND_HIT set and only params_check clears it; this
@@ -462,7 +462,7 @@ class CommandChecker:
     # product domain (no routing); -mg routes each turn to product or sales.
     @command_check(["mp"])
     def product_master(self, **params):
-        from apps.core.services.AI.Agents.manager_general import GeneralManagerAgent
+        from apps.core.services.AI.Agents.core.router import GeneralManagerAgent
         return _interactive_repl(
             self,
             GeneralManagerAgent(pinned="product"),
@@ -472,7 +472,7 @@ class CommandChecker:
 
     @command_check(["mg", "general"])
     def general_manager(self, **params):
-        from apps.core.services.AI.Agents.manager_general import GeneralManagerAgent
+        from apps.core.services.AI.Agents.core.router import GeneralManagerAgent
         return _interactive_repl(
             self,
             GeneralManagerAgent(),

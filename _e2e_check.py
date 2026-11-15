@@ -40,7 +40,7 @@ print("has text:", bool(d.get("text")))
 # --------------------------------------------------------------------------- #
 # Regression checks: SQL-builder "no zero-attribute categories" bug.
 # --------------------------------------------------------------------------- #
-from apps.core.services.AI.Agents.worker_product_sql_builder import (
+from apps.core.services.AI.Agents.domains.product.workers.sql_builder import (
     ProductSqlBuilderWorker,
     _normalise_tables,
     _normalise_execute,
@@ -109,7 +109,7 @@ assert row_count == 62, sql_plan.get("queries")
 print("62-row end-to-end check: OK")
 
 # 6) Manager rebuilds an answer from executed rows when the model replies with no JSON.
-from apps.core.services.AI.Agents.manager_product import ProductMasterAgent
+from apps.core.services.AI.Agents.domains.product.manager import ProductMasterAgent
 
 agent = ProductMasterAgent(mode="plan")
 fake_manager = {

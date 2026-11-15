@@ -1,0 +1,3 @@
+# SQL parsing for the single AI guardrail (Agents/core/guardrail.py).
+# The environment also depends on the packages listed in requirements/*.txt.
+sqlglot>=25.0

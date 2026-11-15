@@ -17,17 +17,20 @@ from apps.core import commands as registry
 from apps.core import config
 import apps.core.operations  # noqa: F401  (populates the command registry)
 from apps.core.models import PriceQuote
-from apps.core.services.AI.Agents.manager_product import (
+from apps.core.services.AI.Agents.domains.product.manager import (
     ProductMasterAgent,
+    assert_plan_sql,
     format_plan,
     parse_mode,
 )
-from apps.core.services.AI.Tools.act_tools import execute_plan
-from apps.core.services.AI.Agents.worker_product_name import ProductNameWorker
-from apps.core.services.AI.Agents.worker_web_research import WebResearchWorker
-from apps.core.services.AI.Agents.worker_product_price import ProductPriceWorker
-from apps.core.services.AI.Agents.worker_product_attributes import ProductAttributesWorker
-from apps.core.services.AI.Agents.worker_product_sql_builder import ProductSqlBuilderWorker
+from apps.core.services.AI.Agents.core.contracts import canonical_digest
+from apps.core.services.AI.Agents.core import plan_store
+from apps.core.services.AI.Agents.core.act_tools import execute_plan
+from apps.core.services.AI.Agents.domains.product.workers.name import ProductNameWorker
+from apps.core.services.AI.Agents.domains.product.workers.web_research import WebResearchWorker
+from apps.core.services.AI.Agents.domains.product.workers.price import ProductPriceWorker
+from apps.core.services.AI.Agents.domains.product.workers.attributes import ProductAttributesWorker
+from apps.core.services.AI.Agents.domains.product.workers.sql_builder import ProductSqlBuilderWorker
 
 
 def _json_body(request):
@@ -196,35 +199,55 @@ def manager_product(request):
         except Exception as exc:  # noqa: BLE001 - surface the error to the caller
             return JsonResponse({"error": str(exc)}, status=500)
 
-        plan_id = str(uuid.uuid4())
-        cache.set(f"ai_plan:{plan_id}", plan, AI_PLAN_CACHE_TTL)
+        plan = assert_plan_sql(plan, mode="plan")
+        plan_id, plan_hash = plan_store.put(plan, domain="product", mode="plan")
+        plan["plan_id"] = plan_id
+        plan["plan_hash"] = plan_hash
         return JsonResponse(
             {"mode": "plan", "plan": plan, "plan_id": plan_id,
-             "text": format_plan(plan)}
+             "plan_hash": plan_hash, "text": format_plan(plan)}
         )
 
     # ---- act mode ----
+    dry_run = bool(body.get("dry_run"))
+    confirm = bool(body.get("confirm"))
+    plan_id = body.get("plan_id")
+    plan_hash = body.get("plan_hash")
     plan = body.get("plan")
-    if not isinstance(plan, dict):
-        plan_id = body.get("plan_id")
-        plan = cache.get(f"ai_plan:{plan_id}") if plan_id else None
-    if not isinstance(plan, dict):
-        try:
-            plan = ProductMasterAgent(mode="plan").plan(str(task), links, images)
-        except Exception as exc:  # noqa: BLE001
-            return JsonResponse({"error": str(exc)}, status=500)
 
-    from apps.core.services.AI.Agents.manager_product import assert_plan_sql
+    try:
+        if isinstance(plan, dict):
+            # An inline plan must carry the hash produced at /plan time, so the
+            # executed statements are exactly what the human reviewed.
+            if not plan_hash:
+                return JsonResponse(
+                    {"error": "plan_hash required when submitting an inline plan; "
+                              "run /plan first."},
+                    status=400,
+                )
+            if canonical_digest(plan) != plan_hash:
+                return JsonResponse(
+                    {"error": "plan changed since review; re-run /plan"}, status=409
+                )
+        else:
+            envelope = plan_store.get(plan_id, plan_hash=plan_hash)
+            plan = envelope["plan"]
+            plan_hash = envelope["plan_hash"]
 
-    plan = assert_plan_sql(plan, mode="act")
-    executed = execute_plan(
-        plan,
-        dry_run=bool(body.get("dry_run")),
-        confirm=bool(body.get("confirm")),
-    )
+        # Re-check the reviewed plan under the act policy immediately before
+        # executing; this never regenerates SQL from the model.
+        plan = assert_plan_sql(plan, mode="act")
+    except plan_store.PlanNotFound as exc:
+        return JsonResponse({"error": str(exc)}, status=400)
+    except plan_store.PlanHashMismatch as exc:
+        return JsonResponse({"error": str(exc)}, status=409)
+
+    executed = execute_plan(plan, plan_id=plan_id, dry_run=dry_run, confirm=confirm)
+    if not dry_run:
+        plan_store.consume(plan_id)
     return JsonResponse(
-        {"mode": "act", "plan": plan, "executed": executed,
-         "text": format_plan(plan, executed)}
+        {"mode": "act", "plan": plan, "plan_id": plan_id, "plan_hash": plan_hash,
+         "executed": executed, "text": format_plan(plan, executed)}
     )
 
 

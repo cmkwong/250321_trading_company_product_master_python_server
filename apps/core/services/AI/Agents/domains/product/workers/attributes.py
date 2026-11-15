@@ -14,8 +14,16 @@ from typing import Any, Dict, List, Optional
 from langchain.agents import create_agent
 from langchain_core.tools import tool
 
-from . import worker_base as base
-from apps.core.services.AI.Tools.plan_tools import (
+from apps.core.services.AI.Agents.core.contracts import (
+    as_sql_list,
+    as_str_list,
+    dump_worker_result,
+    extract_json_block,
+)
+from apps.core.services.AI.Agents.core.guardrail import assert_draft_sql
+from apps.core.services.AI.Agents.core.llm import DEFAULT_MODEL, build_llm
+from apps.core.services.AI.Agents.core.streaming import stream_agent
+from apps.core.services.AI.Agents.core.plan_tools import (
     build_attribute_dropdown_sql,
     build_category_attribute_assign_sql,
     build_create_attribute_sql,
@@ -108,12 +116,17 @@ def _format_attributes(result: Dict[str, Any]) -> str:
 class ProductAttributesWorker:
     """Tool-calling agent for attribute create/assign work."""
 
-    def __init__(self, model: Optional[str] = None, temperature: float = 0.0,
-                 recursion_limit: int = 25, llm: Any = None):
-        self.model = model or base.DEFAULT_MODEL
+    def __init__(
+        self,
+        model: Optional[str] = None,
+        temperature: float = 0.0,
+        recursion_limit: int = 25,
+        llm: Any = None,
+    ):
+        self.model = model or DEFAULT_MODEL
         self.temperature = temperature
         self.recursion_limit = recursion_limit
-        self.llm = llm or base.build_llm(self.model, temperature=temperature)
+        self.llm = llm or build_llm(self.model, temperature=temperature)
         self._agent = None
 
     def _get_agent(self):
@@ -127,7 +140,8 @@ class ProductAttributesWorker:
 
     def _build_human_message(self, task: str) -> str:
         return (
-            "Task:\n" + (task or "")
+            "Task:\n"
+            + (task or "")
             + "\n\nProduce the plan and SQL only. Do not write data; the only SQL you may execute is a read-only SELECT via `execute_select_query`."
         )
 
@@ -137,10 +151,10 @@ class ProductAttributesWorker:
             plan = {}
         return {
             "summary": str(plan.get("summary", "")),
-            "plan": base.as_str_list(plan.get("plan")),
-            "sql": base.as_sql_list(plan.get("sql")),
-            "missing_data": base.as_str_list(plan.get("missing_data")),
-            "risks": base.as_str_list(plan.get("risks")),
+            "plan": as_str_list(plan.get("plan")),
+            "sql": as_sql_list(plan.get("sql")),
+            "missing_data": as_str_list(plan.get("missing_data")),
+            "risks": as_str_list(plan.get("risks")),
         }
 
     def _parse_result(self, result: Dict[str, Any]) -> Dict[str, Any]:
@@ -159,10 +173,10 @@ class ProductAttributesWorker:
                     text = str(content)
                     if text.strip():
                         break
-            structured = base.extract_json_block(text)
+            structured = extract_json_block(text)
 
         norm = self._normalise(structured)
-        safe, risks = base.assert_draft_sql(norm["sql"], ALLOWED_ATTRIBUTE_TABLES)
+        safe, risks = assert_draft_sql(norm["sql"], ALLOWED_ATTRIBUTE_TABLES)
         norm["sql"] = safe
         norm["risks"] = list(norm["risks"]) + risks
         norm["worker"] = "product_attributes"
@@ -181,7 +195,7 @@ class ProductAttributesWorker:
         agent = self._get_agent()
         inp = {"messages": [("human", self._build_human_message(task))]}
         last_state: Dict[str, Any] = {}
-        for event in base.stream_agent(agent, inp, recursion_limit=self.recursion_limit):
+        for event in stream_agent(agent, inp, recursion_limit=self.recursion_limit):
             if event["type"] == "_done":
                 last_state = event["state"]
                 break
@@ -197,6 +211,4 @@ def manage_product_attributes(task: str) -> str:
         result = ProductAttributesWorker().plan(task)
     except Exception as exc:  # noqa: BLE001
         result = {"worker": "product_attributes", "ok": False, "error": str(exc)}
-    return base.dumps(result)
-
-
+    return dump_worker_result(result)

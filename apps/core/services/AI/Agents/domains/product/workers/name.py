@@ -20,12 +20,15 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_core.tools import tool
 
 from apps.core import config
-from . import worker_base as base
-from apps.core.services.AI.Tools.utils import (
-    MasterApiError,
-    _rows,
-    _sql_literal,
+from apps.core.services.AI.Agents.core.contracts import (
+    as_str_list,
+    dump_worker_result,
+    extract_json_block,
 )
+from apps.core.services.AI.Agents.core.llm import VISION_MODEL, build_llm, message_text
+from apps.core.services.AI.Agents.core.contracts import MasterApiError
+from apps.core.services.AI.Agents.core.master_api import _rows
+from apps.core.services.AI.Agents.core.sql import _sql_literal
 
 MAX_IMAGE_PX = int(config.get("AI_IMAGE_MAX_PX", "1024"))
 IMAGE_MAX_BYTES = int(config.get("AI_IMAGE_MAX_BYTES", str(5 * 1024 * 1024)))
@@ -90,7 +93,9 @@ def _to_data_url(ref: str) -> str:
     if ref.startswith(("http://", "https://")):
         session = requests.Session()
         session.trust_env = False
-        resp = session.get(ref, timeout=IMAGE_TIMEOUT, headers={"User-Agent": "Mozilla/5.0"})
+        resp = session.get(
+            ref, timeout=IMAGE_TIMEOUT, headers={"User-Agent": "Mozilla/5.0"}
+        )
         resp.raise_for_status()
         raw = resp.content
         mime = (resp.headers.get("Content-Type", "") or "image/jpeg").split(";")[0]
@@ -110,13 +115,18 @@ def _to_data_url(ref: str) -> str:
     return "data:" + mime + ";base64," + base64.b64encode(raw).decode("ascii")
 
 
-def _build_product_name_sql(product_id: str, name_type: str, name: str,
-                            display_order: int = 1) -> Dict[str, str]:
+def _build_product_name_sql(
+    product_id: str, name_type: str, name: str, display_order: int = 1
+) -> Dict[str, str]:
     """Build an idempotent INSERT for one ``product_names`` row."""
     try:
         rows = _rows("master_product_name_types")
         matched = next(
-            (r for r in rows if str(r.get("name", "")).strip().lower() == name_type.lower()),
+            (
+                r
+                for r in rows
+                if str(r.get("name", "")).strip().lower() == name_type.lower()
+            ),
             None,
         )
     except MasterApiError:
@@ -127,12 +137,22 @@ def _build_product_name_sql(product_id: str, name_type: str, name: str,
     type_lit = _sql_literal(name_type)
 
     if matched is None:
-        return {"purpose": "", "statement": "", "verification": "",
-                "error": f"unknown name_type {name_type!r}"}
+        return {
+            "purpose": "",
+            "statement": "",
+            "verification": "",
+            "error": f"unknown name_type {name_type!r}",
+        }
 
     statement = (
         "INSERT INTO product_names (id, product_id, name, name_type_id, display_order)\n"
-        "SELECT UUID(), " + pid + ", " + name_lit + ", t.id, " + str(int(display_order)) + "\n"
+        "SELECT UUID(), "
+        + pid
+        + ", "
+        + name_lit
+        + ", t.id, "
+        + str(int(display_order))
+        + "\n"
         "FROM master_product_name_types AS t\n"
         "WHERE t.name = " + type_lit + "\n"
         "  AND NOT EXISTS (\n"
@@ -158,13 +178,19 @@ class ProductNameWorker:
     """Rename a Chinese product name into SEO English using a vision model."""
 
     def __init__(self, model: Optional[str] = None, llm: Any = None):
-        self.model = model or base.VISION_MODEL
-        self.llm = llm or base.build_llm(self.model, vision=True)
+        self.model = model or VISION_MODEL
+        self.llm = llm or build_llm(self.model, vision=True)
 
-    def rename(self, chinese_name: str, images: Optional[List[str]] = None,
-               seo_keywords: Optional[List[str]] = None, seo_file: Optional[str] = None,
-               name_type: str = "seo", tone: str = "professional",
-               product_id: Optional[str] = None) -> Dict[str, Any]:
+    def rename(
+        self,
+        chinese_name: str,
+        images: Optional[List[str]] = None,
+        seo_keywords: Optional[List[str]] = None,
+        seo_file: Optional[str] = None,
+        name_type: str = "seo",
+        tone: str = "professional",
+        product_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
         """Run the rename worker and return a structured envelope."""
         images = [i for i in (images or []) if str(i).strip()]
         seo_keywords = list(seo_keywords or [])
@@ -172,6 +198,7 @@ class ProductNameWorker:
         if seo_file:
             try:
                 from apps.core.services.file_service import FileController
+
                 extra = FileController().readSEOWords_Alibaba(seo_file)
                 if extra:
                     seo_keywords = seo_keywords + [extra]
@@ -191,10 +218,16 @@ class ProductNameWorker:
             f"Tone: {tone}",
         ]
         if seo_keywords:
-            prompt_lines.append("Hot keywords to include (naturally): " + ", ".join(seo_keywords))
-        prompt_lines.append("Return ONLY the JSON object described in the system prompt.")
+            prompt_lines.append(
+                "Hot keywords to include (naturally): " + ", ".join(seo_keywords)
+            )
+        prompt_lines.append(
+            "Return ONLY the JSON object described in the system prompt."
+        )
 
-        content: List[Dict[str, Any]] = [{"type": "text", "text": "\n".join(prompt_lines)}]
+        content: List[Dict[str, Any]] = [
+            {"type": "text", "text": "\n".join(prompt_lines)}
+        ]
         for url in data_urls:
             content.append({"type": "image_url", "image_url": {"url": url}})
 
@@ -204,21 +237,27 @@ class ProductNameWorker:
         ]
 
         try:
-            text = base.message_text(self.llm.invoke(messages))
+            text = message_text(self.llm.invoke(messages))
         except Exception as exc:  # noqa: BLE001 - surface as an error envelope
-            return {"worker": "product_name", "ok": False,
-                    "error": str(exc), "hint": "Check the Ollama vision model is loaded."}
+            return {
+                "worker": "product_name",
+                "ok": False,
+                "error": str(exc),
+                "hint": "Check the Ollama vision model is loaded.",
+            }
 
-        data = base.extract_json_block(text) or {}
+        data = extract_json_block(text) or {}
         sql: List[Dict[str, str]] = []
-        missing = list(base.as_str_list(data.get("missing_data")))
-        risks = list(base.as_str_list(data.get("risks")))
+        missing = list(as_str_list(data.get("missing_data")))
+        risks = list(as_str_list(data.get("risks")))
         risks += [f"image skipped: {e}" for e in image_errors]
 
         if product_id:
             name_to_store = data.get("seo_name") or data.get("plain_translation") or ""
             if name_to_store:
-                step = _build_product_name_sql(str(product_id), name_type, str(name_to_store))
+                step = _build_product_name_sql(
+                    str(product_id), name_type, str(name_to_store)
+                )
                 if step.get("error"):
                     missing.append(step["error"])
                 else:
@@ -256,8 +295,4 @@ def rename_product_with_seo(
         )
     except Exception as exc:  # noqa: BLE001
         result = {"worker": "product_name", "ok": False, "error": str(exc)}
-    return base.dumps(result)
-
-
-
-
+    return dump_worker_result(result)

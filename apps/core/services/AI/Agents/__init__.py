@@ -1,27 +1,33 @@
 """LangChain agent definitions: a manager agent plus specialist workers."""
 
-from apps.core.services.AI.Agents.manager_general import (
-    GeneralManagerAgent,
-    ConversationMemory,
-    DomainManagerAgent,
-    parse_command,
-)
-from apps.core.services.AI.Agents.manager_product import ProductMasterAgent, format_plan
-from apps.core.services.AI.Agents.manager_sales import SalesManagerAgent
-from apps.core.services.AI.Agents.worker_product_name import ProductNameWorker
-from apps.core.services.AI.Agents.worker_web_research import WebResearchWorker
-from apps.core.services.AI.Agents.worker_product_price import ProductPriceWorker
-from apps.core.services.AI.Agents.worker_product_attributes import ProductAttributesWorker
-from apps.core.services.AI.Agents.worker_product_sql_builder import ProductSqlBuilderWorker
+from apps.core.services.AI.Agents.core.router import GeneralManagerAgent, parse_command
+from apps.core.services.AI.Agents.core.memory import ConversationMemory
+from apps.core.services.AI.Agents.core.engine import DomainManagerAgent, format_plan
+from apps.core.services.AI.Agents.domains.product.manager import ProductMasterAgent
+from apps.core.services.AI.Agents.domains.sales.manager import SalesManagerAgent
+from apps.core.services.AI.Agents.domains.product.workers.name import ProductNameWorker
+from apps.core.services.AI.Agents.domains.product.workers.web_research import WebResearchWorker
+from apps.core.services.AI.Agents.domains.product.workers.price import ProductPriceWorker
+from apps.core.services.AI.Agents.domains.product.workers.attributes import ProductAttributesWorker
+from apps.core.services.AI.Agents.domains.product.workers.sql_builder import ProductSqlBuilderWorker
+from apps.core.services.AI.Agents.core import registry
 
-# Registry mapping a worker name to its class, used by the HTTP API dispatcher.
-WORKERS = {
-    "product_name": ProductNameWorker,
-    "web_research": WebResearchWorker,
-    "product_price": ProductPriceWorker,
-    "product_attributes": ProductAttributesWorker,
-    "product_sql_builder": ProductSqlBuilderWorker,
+# Registry mapping a worker name to its class, used by the HTTP API dispatcher
+# and the manager tool list.
+registry.register_worker("product_name")(ProductNameWorker)
+registry.register_worker("web_research")(WebResearchWorker)
+registry.register_worker("product_price")(ProductPriceWorker)
+registry.register_worker("product_attributes")(ProductAttributesWorker)
+registry.register_worker("product_sql_builder")(ProductSqlBuilderWorker)
+
+WORKERS = registry.WORKERS
+
+# Domain registry: a name -> manager factory, used by the general router.
+DOMAINS = {
+    "product": ProductMasterAgent,
+    "sales": SalesManagerAgent,
 }
+registry.DOMAINS.update(DOMAINS)
 
 __all__ = [
     "ProductMasterAgent",
@@ -37,5 +43,7 @@ __all__ = [
     "ProductAttributesWorker",
     "ProductSqlBuilderWorker",
     "WORKERS",
+    "DOMAINS",
 ]
+
 

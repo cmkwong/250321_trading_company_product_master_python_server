@@ -13,7 +13,12 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_core.tools import tool
 
 from apps.core import config
-from . import worker_base as base
+from apps.core.services.AI.Agents.core.contracts import (
+    as_str_list,
+    dump_worker_result,
+    extract_json_block,
+)
+from apps.core.services.AI.Agents.core.llm import DEFAULT_MODEL, build_llm, message_text
 
 MAX_CHARS = int(config.get("AI_WEB_FETCH_MAX_CHARS", "8000"))
 MAX_URLS = int(config.get("AI_WEB_MAX_URLS", "3"))
@@ -64,8 +69,8 @@ class WebResearchWorker:
     """Summarise web pages into target fields using a local model."""
 
     def __init__(self, model: Optional[str] = None, llm: Any = None):
-        self.model = model or base.DEFAULT_MODEL
-        self.llm = llm or base.build_llm(self.model)
+        self.model = model or DEFAULT_MODEL
+        self.llm = llm or build_llm(self.model)
 
     def research(
         self,
@@ -126,7 +131,7 @@ class WebResearchWorker:
             )
 
         try:
-            text = base.message_text(
+            text = message_text(
                 self.llm.invoke(
                     [
                         SystemMessage(content=WEB_SYSTEM_PROMPT),
@@ -143,10 +148,10 @@ class WebResearchWorker:
                 "risks": risks,
             }
 
-        data = base.extract_json_block(text) or {}
+        data = extract_json_block(text) or {}
         fields = data.get("fields") if isinstance(data.get("fields"), dict) else {}
 
-        missing = list(base.as_str_list(data.get("missing_fields")))
+        missing = list(as_str_list(data.get("missing_fields")))
         for f in target_fields:
             if (f not in fields or fields[f] in (None, "")) and f not in missing:
                 missing.append(f)
@@ -156,7 +161,7 @@ class WebResearchWorker:
             "ok": True,
             "summary": str(data.get("summary", "")),
             "fields": fields,
-            "quotes": base.as_str_list(data.get("quotes")),
+            "quotes": as_str_list(data.get("quotes")),
             "missing_fields": missing,
             "sources": sources,
             "risks": risks,
@@ -176,4 +181,4 @@ def research_product_web(
         )
     except Exception as exc:  # noqa: BLE001
         result = {"worker": "web_research", "ok": False, "error": str(exc)}
-    return base.dumps(result)
+    return dump_worker_result(result)

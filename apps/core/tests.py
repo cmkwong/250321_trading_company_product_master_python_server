@@ -56,12 +56,12 @@ class ProductMasterToolTests(TestCase):
     """Offline tests for the product-master tools (no network, no LLM)."""
 
     def setUp(self):
-        from apps.core.services.AI.Tools import plan_tools as t
-        from apps.core.services.AI.Tools import utils
+        from apps.core.services.AI.Agents.core import plan_tools as t
+        from apps.core.services.AI.Agents.core import master_api, schema_catalog
 
         self.t = t
-        self.utils = utils
-        self._original_rows = utils._rows
+        self.utils = master_api
+        self._original_rows = master_api._rows
         self.fixtures = {
             "master_categories": [
                 {"id": "c1", "name": "Pet Playpens", "parent_id": None},
@@ -80,8 +80,8 @@ class ProductMasterToolTests(TestCase):
         def fake_rows(table_name):
             return list(self.fixtures.get(table_name, []))
 
-        utils._rows = fake_rows
-        self.addCleanup(lambda: setattr(utils, "_rows", self._original_rows))
+        master_api._rows = fake_rows
+        self.addCleanup(lambda: setattr(master_api, "_rows", self._original_rows))
 
     def test_build_sql_skips_already_assigned(self):
         result = self.t.build_category_attribute_assign_sql.invoke(
@@ -116,7 +116,7 @@ class ProductMasterToolTests(TestCase):
         self.assertIn("category not found", data["error"])
 
     def test_plan_guard_keeps_update_removes_delete_and_ddl(self):
-        from apps.core.services.AI.Agents import manager_product as p
+        from apps.core.services.AI.Agents.domains.product import manager as p
 
         plan = {
             "summary": "s",
@@ -242,7 +242,7 @@ class ProductMasterAgentStreamTests(TestCase):
     def test_stream_emits_tokens_status_and_guarded_plan(self):
         from unittest.mock import patch
 
-        from apps.core.services.AI.Agents import manager_product as p
+        from apps.core.services.AI.Agents.domains.product import manager as p
 
         class _Chunk:
             def __init__(self, content="", tool_call_chunks=None):
@@ -312,8 +312,8 @@ class ProductMasterAgentStreamTests(TestCase):
 
         from unittest.mock import patch
 
-        from apps.core.services.AI.Agents import manager_product as p
-        from apps.core.services.AI.Agents import manager_general as g
+        from apps.core.services.AI.Agents.domains.product import manager as p
+        from apps.core.services.AI.Agents.core import engine as g
 
         class _Chunk:
             def __init__(self, content=""):
@@ -345,7 +345,7 @@ class ProductMasterAgentStreamTests(TestCase):
     def test_stream_replays_history_for_follow_up_turns(self):
         from unittest.mock import patch
 
-        from apps.core.services.AI.Agents import manager_product as p
+        from apps.core.services.AI.Agents.domains.product import manager as p
 
         class _Msg:
             def __init__(self, type_="ai", content=""):
@@ -388,7 +388,7 @@ class ProductMasterCommandTests(TestCase):
         from unittest.mock import patch
 
         from codes.CommandChecker import CommandChecker
-        from apps.core.services.AI.Agents import manager_general as g
+        from apps.core.services.AI.Agents.core import router as g
 
         tasks_seen = []
         compacted = []
@@ -442,7 +442,7 @@ class ProductMasterCommandTests(TestCase):
 
 class WorkerSqlGuardrailTests(TestCase):
     def test_assert_draft_sql_keeps_select_and_allowed_insert(self):
-        from apps.core.services.AI.Agents import worker_base as base
+        from apps.core.services.AI.Agents.core import guardrail as base
 
         safe, risks = base.assert_draft_sql(
             [
@@ -463,7 +463,7 @@ class WorkerSqlGuardrailTests(TestCase):
 
 class ProductPriceWorkerTests(TestCase):
     def test_prices_match_price_controller_formula(self):
-        from apps.core.services.AI.Agents.worker_product_price import ProductPriceWorker
+        from apps.core.services.AI.Agents.domains.product.workers.price import ProductPriceWorker
         from codes.datas import Exchange
 
         result = ProductPriceWorker().define_price(
@@ -480,7 +480,7 @@ class ProductPriceWorkerTests(TestCase):
         self.assertTrue(all("UUID()" in s and "NOT EXISTS" in s for s in statements))
 
     def test_by_variants_reports_missing_data(self):
-        from apps.core.services.AI.Agents.worker_product_price import ProductPriceWorker
+        from apps.core.services.AI.Agents.domains.product.workers.price import ProductPriceWorker
 
         result = ProductPriceWorker().define_price(
             cost=50.0, selling_by_mode="by_variants", currency_id="c-usd", product_id="p1"
@@ -495,7 +495,7 @@ class ProductNameWorkerTests(TestCase):
         import os
         import tempfile
 
-        from apps.core.services.AI.Agents.worker_product_name import _to_data_url
+        from apps.core.services.AI.Agents.domains.product.workers.name import _to_data_url
         from PIL import Image
 
         fd, path = tempfile.mkstemp(suffix=".png")
@@ -508,7 +508,7 @@ class ProductNameWorkerTests(TestCase):
             os.unlink(path)
 
     def test_rename_parses_seo_json_without_network(self):
-        from apps.core.services.AI.Agents.worker_product_name import ProductNameWorker
+        from apps.core.services.AI.Agents.domains.product.workers.name import ProductNameWorker
 
         class _Resp:
             def __init__(self, content):
@@ -518,7 +518,7 @@ class ProductNameWorkerTests(TestCase):
             def invoke(self, messages):
                 return _Resp(
                     json.dumps({
-                        "source_name_cn": "宠物围栏",
+                        "source_name_cn": "宠物?��?",
                         "plain_translation": "Pet Playpen",
                         "seo_name": "Foldable Pet Playpen For Dogs And Cats",
                         "short_name": "Pet Playpen",
@@ -532,7 +532,7 @@ class ProductNameWorkerTests(TestCase):
                     })
                 )
 
-        result = ProductNameWorker(llm=_FakeLLM()).rename(chinese_name="宠物围栏")
+        result = ProductNameWorker(llm=_FakeLLM()).rename(chinese_name="宠物?��?")
         self.assertTrue(result["ok"])
         self.assertEqual(result["data"]["seo_name"], "Foldable Pet Playpen For Dogs And Cats")
         self.assertEqual(result["sql"], [])  # no product_id -> no product_names SQL
@@ -542,7 +542,7 @@ class WebResearchWorkerTests(TestCase):
     def test_research_extracts_fields_and_flags_missing(self):
         from unittest.mock import patch
 
-        from apps.core.services.AI.Agents.worker_web_research import WebResearchWorker
+        from apps.core.services.AI.Agents.domains.product.workers.web_research import WebResearchWorker
 
         class _Resp:
             def __init__(self, content):
@@ -559,7 +559,7 @@ class WebResearchWorkerTests(TestCase):
 
         worker = WebResearchWorker(llm=_FakeLLM())
         with patch(
-            "apps.core.services.AI.Agents.worker_web_research.fetch_text",
+            "apps.core.services.AI.Agents.domains.product.workers.web_research.fetch_text",
             return_value="Dog bed for large breeds. " * 20,
         ):
             result = worker.research(
@@ -572,7 +572,7 @@ class WebResearchWorkerTests(TestCase):
 
 class ProductAttributesWorkerTests(TestCase):
     def test_guardrail_strips_drop_keeps_assign_insert(self):
-        from apps.core.services.AI.Agents.worker_product_attributes import ProductAttributesWorker
+        from apps.core.services.AI.Agents.domains.product.workers.attributes import ProductAttributesWorker
 
         class _Msg:
             def __init__(self, type_, content):
@@ -611,7 +611,7 @@ class ProductAttributesWorkerTests(TestCase):
 
 class ManagerDelegationTests(TestCase):
     def test_manager_exposes_worker_tools(self):
-        from apps.core.services.AI.Agents import manager_product as m
+        from apps.core.services.AI.Agents.domains.product import manager as m
 
         names = {t.name for t in m.WORKER_TOOLS}
         self.assertTrue(
@@ -620,13 +620,13 @@ class ManagerDelegationTests(TestCase):
         )
 
     def test_human_message_includes_images(self):
-        from apps.core.services.AI.Agents import manager_product as m
+        from apps.core.services.AI.Agents.domains.product import manager as m
 
         msg = m.ProductMasterAgent()._build_human_message("do it", images=["a.png"])
         self.assertIn("a.png", msg)
 
     def test_collect_worker_results_aggregates_sql(self):
-        from apps.core.services.AI.Agents import manager_product as m
+        from apps.core.services.AI.Agents.domains.product import manager as m
 
         class _ToolMsg:
             def __init__(self, content):
@@ -828,22 +828,22 @@ class NodeServiceAccountTests(TestCase):
 
 class ParseModeTests(TestCase):
     def test_parse_mode_defaults_to_plan(self):
-        from apps.core.services.AI.Agents.manager_product import parse_mode
+        from apps.core.services.AI.Agents.domains.product.manager import parse_mode
 
         self.assertEqual(parse_mode("add material"), ("plan", "add material"))
 
     def test_parse_mode_act(self):
-        from apps.core.services.AI.Agents.manager_product import parse_mode
+        from apps.core.services.AI.Agents.domains.product.manager import parse_mode
 
         self.assertEqual(parse_mode("/act add material"), ("act", "add material"))
 
     def test_parse_mode_plan_explicit(self):
-        from apps.core.services.AI.Agents.manager_product import parse_mode
+        from apps.core.services.AI.Agents.domains.product.manager import parse_mode
 
         self.assertEqual(parse_mode("/plan add material"), ("plan", "add material"))
 
     def test_parse_mode_embedded_slash_not_triggered(self):
-        from apps.core.services.AI.Agents.manager_product import parse_mode
+        from apps.core.services.AI.Agents.domains.product.manager import parse_mode
 
         self.assertEqual(
             parse_mode("see /act/x for docs"), ("plan", "see /act/x for docs")
@@ -852,7 +852,7 @@ class ParseModeTests(TestCase):
 
 class ActModeTests(TestCase):
     def test_act_guard_keeps_delete_removes_ddl(self):
-        from apps.core.services.AI.Agents import manager_product as p
+        from apps.core.services.AI.Agents.domains.product import manager as p
 
         plan = {
             "summary": "s",
@@ -870,7 +870,7 @@ class ActModeTests(TestCase):
         self.assertFalse(any("DROP" in s for s in statements))
 
     def test_agent_mode_selects_tools(self):
-        from apps.core.services.AI.Agents import manager_product as m
+        from apps.core.services.AI.Agents.domains.product import manager as m
 
         plan_names = {t.name for t in m.WORKER_TOOLS}
         act_names = {t.name for t in m.ACT_TOOLS}
@@ -879,11 +879,50 @@ class ActModeTests(TestCase):
         self.assertNotIn("execute_update_query", plan_names)
         self.assertNotIn("execute_delete_query", plan_names)
 
-    def test_execute_plan_routes_by_verb(self):
+    def test_execute_plan_batch_routes_all_statements_in_one_call(self):
         from unittest.mock import patch
 
-        from apps.core.services.AI.Tools import utils
-        from apps.core.services.AI.Tools.act_tools import execute_plan
+        from apps.core.services.AI.Agents.core import master_api, schema_catalog
+        from apps.core.services.AI.Agents.core.act_tools import execute_plan
+
+        calls = []
+
+        def fake_post(path, payload, *, label="query"):
+            calls.append((path, payload))
+            results = [
+                {"index": 0, "verb": "SELECT", "rowCount": 1, "rows": [{"id": "c1"}]},
+                {"index": 1, "verb": "WRITE", "affectedRows": 1, "changedRows": 0, "insertId": "x"},
+                {"index": 2, "verb": "WRITE", "affectedRows": 1, "changedRows": 1, "insertId": None},
+                {"index": 3, "verb": "DELETE", "affectedRows": 1, "info": ""},
+            ]
+            return {"data": {"results": results, "committed": True}}
+
+        plan = {"sql": [
+            {"purpose": "read", "statement": "SELECT * FROM master_categories LIMIT 1;"},
+            {"purpose": "insert", "statement": "INSERT INTO master_product_attributes (id, name, label) VALUES (UUID(), 'zzz', 'Z');"},
+            {"purpose": "update", "statement": "UPDATE master_categories SET name='y' WHERE id='c1';"},
+            {"purpose": "delete", "statement": "DELETE FROM master_categories WHERE id='c1';"},
+        ]}
+        with patch.object(master_api, "_api_post", side_effect=fake_post):
+            results = execute_plan(plan, plan_id="p1")
+
+        self.assertEqual(len(results), 4)
+        self.assertTrue(all(r["ok"] for r in results))
+        self.assertEqual(len(calls), 1)
+        path, payload = calls[0]
+        self.assertEqual(path, master_api.BATCH_QUERY_PATH)
+        self.assertEqual(payload["planId"], "p1")
+        statements = [s["statement"] for s in payload["statements"]]
+        self.assertEqual(statements[0], "SELECT * FROM master_categories LIMIT 1;")
+        # UPDATE/DELETE are capped with maxRows for the Node-side check.
+        self.assertIsNotNone(payload["statements"][2]["maxRows"])
+        self.assertIsNotNone(payload["statements"][3]["maxRows"])
+
+    def test_execute_plan_sequential_fallback(self):
+        from unittest.mock import patch
+
+        from apps.core.services.AI.Agents.core import master_api, schema_catalog
+        from apps.core.services.AI.Agents.core import act_tools
 
         calls = []
 
@@ -897,26 +936,27 @@ class ActModeTests(TestCase):
             {"purpose": "update", "statement": "UPDATE master_categories SET name='y' WHERE id='c1';"},
             {"purpose": "delete", "statement": "DELETE FROM master_categories WHERE id='c1';"},
         ]}
-        with patch.object(utils, "_api_post", side_effect=fake_post):
-            results = execute_plan(plan)
+        with patch.object(act_tools._settings, "AI_ACT_BATCH", False):
+            with patch.object(master_api, "_api_post", side_effect=fake_post):
+                results = act_tools.execute_plan(plan)
 
         self.assertEqual(len(results), 4)
         self.assertTrue(all(r["ok"] for r in results))
         self.assertEqual(calls, [
-            utils.SELECT_QUERY_PATH,
-            utils.UPDATE_QUERY_PATH,
-            utils.UPDATE_QUERY_PATH,
-            utils.DELETE_QUERY_PATH,
+            master_api.SELECT_QUERY_PATH,
+            master_api.UPDATE_QUERY_PATH,
+            master_api.UPDATE_QUERY_PATH,
+            master_api.DELETE_QUERY_PATH,
         ])
 
     def test_execute_plan_requires_confirmation_for_no_where(self):
         from unittest.mock import patch
 
-        from apps.core.services.AI.Tools import utils
-        from apps.core.services.AI.Tools.act_tools import execute_plan
+        from apps.core.services.AI.Agents.core import master_api, schema_catalog
+        from apps.core.services.AI.Agents.core.act_tools import execute_plan
 
         plan = {"sql": [{"statement": "UPDATE master_categories SET name='y';"}]}
-        with patch.object(utils, "_api_post") as post:
+        with patch.object(master_api, "_api_post") as post:
             results = execute_plan(plan)
 
         self.assertEqual(len(results), 1)
@@ -925,78 +965,82 @@ class ActModeTests(TestCase):
         post.assert_not_called()
 
 
-    def test_execute_plan_dry_run_no_http(self):
+    def test_execute_plan_dry_run_batch_preview(self):
         from unittest.mock import patch
 
-        from apps.core.services.AI.Tools import utils
-        from apps.core.services.AI.Tools.act_tools import execute_plan
+        from apps.core.services.AI.Agents.core import master_api, schema_catalog
+        from apps.core.services.AI.Agents.core.act_tools import execute_plan
+
+        def fake_post(path, payload, *, label="query"):
+            return {"data": {"committed": False, "dryRun": True,
+                             "results": [{"index": 0, "verb": "WRITE", "affectedRows": 2}]}}
 
         plan = {"sql": [{"statement": "UPDATE master_categories SET name='y' WHERE id='c1';"}]}
-        with patch.object(utils, "_api_post") as post:
+        with patch.object(master_api, "_api_post", side_effect=fake_post) as post:
             results = execute_plan(plan, dry_run=True)
 
         self.assertEqual(len(results), 1)
         self.assertTrue(results[0]["dry_run"])
-        self.assertEqual(results[0]["route"], "update")
-        post.assert_not_called()
+        self.assertFalse(results[0]["committed"])
+        self.assertEqual(post.call_args[0][0], master_api.BATCH_QUERY_PATH)
 
     def test_execute_plan_rejects_disallowed_table(self):
         from unittest.mock import patch
 
-        from apps.core.services.AI.Tools import utils
-        from apps.core.services.AI.Tools.act_tools import execute_plan
+        from apps.core.services.AI.Agents.core import master_api, schema_catalog
+        from apps.core.services.AI.Agents.core.act_tools import execute_plan
 
         plan = {"sql": [{"statement": "DELETE FROM users WHERE id=1;"}]}
-        with patch.object(utils, "_api_post") as post:
+        with patch.object(master_api, "_api_post") as post:
             results = execute_plan(plan)
 
-        self.assertFalse(results[0]["ok"])
+        self.assertEqual(results, [])
         post.assert_not_called()
 
     def test_execute_update_query_tool(self):
         from unittest.mock import patch
 
-        from apps.core.services.AI.Tools import utils
-        from apps.core.services.AI.Tools.act_tools import execute_update_query
+        from apps.core.services.AI.Agents.core import master_api, schema_catalog
+        from apps.core.services.AI.Agents.core.act_tools import execute_update_query
 
         def fake_post(path, payload, *, label="query"):
             return {"data": {"affectedRows": 2, "changedRows": 2, "insertId": None}}
 
-        with patch.object(utils, "_api_post", side_effect=fake_post) as post:
+        with patch.object(master_api, "_api_post", side_effect=fake_post) as post:
             data = json.loads(execute_update_query.invoke(
                 {"query": "UPDATE master_categories SET name='y' WHERE id='c1';"}
             ))
 
         self.assertTrue(data["ok"])
         self.assertEqual(data["affectedRows"], 2)
-        self.assertEqual(post.call_args[0][0], utils.UPDATE_QUERY_PATH)
+        self.assertEqual(post.call_args[0][0], master_api.UPDATE_QUERY_PATH)
 
     def test_execute_delete_query_tool(self):
         from unittest.mock import patch
 
-        from apps.core.services.AI.Tools import utils
-        from apps.core.services.AI.Tools.act_tools import execute_delete_query
+        from apps.core.services.AI.Agents.core import master_api, schema_catalog
+        from apps.core.services.AI.Agents.core.act_tools import execute_delete_query
 
         def fake_post(path, payload, *, label="query"):
             return {"data": {"affectedRows": 1, "info": ""}}
 
-        with patch.object(utils, "_api_post", side_effect=fake_post) as post:
+        with patch.object(master_api, "_api_post", side_effect=fake_post) as post:
             data = json.loads(execute_delete_query.invoke(
                 {"query": "DELETE FROM master_categories WHERE id='c1';"}
             ))
 
         self.assertTrue(data["ok"])
-        self.assertEqual(post.call_args[0][0], utils.DELETE_QUERY_PATH)
+        self.assertEqual(post.call_args[0][0], master_api.DELETE_QUERY_PATH)
 
 
 class BuildWriteSqlTests(TestCase):
     def test_build_update_sql_requires_where(self):
         from unittest.mock import patch
 
-        from apps.core.services.AI.Tools import plan_tools as t
-        from apps.core.services.AI.Tools import utils
+        from apps.core.services.AI.Agents.core import plan_tools as t
+        from apps.core.services.AI.Agents.core import master_api, schema_catalog
 
-        with patch.object(utils, "extract_table_fields", return_value={"name": {}, "id": {}}):
+        with patch.object(schema_catalog, "extract_table_fields", return_value={"name": {}, "id": {}}):
             data = json.loads(t.build_update_sql.invoke(
                 {"table": "master_categories", "set_values": {"name": "x"}}
             ))
@@ -1006,10 +1050,10 @@ class BuildWriteSqlTests(TestCase):
     def test_build_update_sql_ok(self):
         from unittest.mock import patch
 
-        from apps.core.services.AI.Tools import plan_tools as t
-        from apps.core.services.AI.Tools import utils
+        from apps.core.services.AI.Agents.core import plan_tools as t
+        from apps.core.services.AI.Agents.core import master_api, schema_catalog
 
-        with patch.object(utils, "extract_table_fields", return_value={"name": {}, "id": {}}):
+        with patch.object(schema_catalog, "extract_table_fields", return_value={"name": {}, "id": {}}):
             data = json.loads(t.build_update_sql.invoke(
                 {"table": "master_categories", "set_values": {"name": "Cat"},
                  "where": "id = 'c1'"}
@@ -1021,10 +1065,10 @@ class BuildWriteSqlTests(TestCase):
     def test_build_insert_sql_rejects_unknown_column(self):
         from unittest.mock import patch
 
-        from apps.core.services.AI.Tools import plan_tools as t
-        from apps.core.services.AI.Tools import utils
+        from apps.core.services.AI.Agents.core import plan_tools as t
+        from apps.core.services.AI.Agents.core import master_api, schema_catalog
 
-        with patch.object(utils, "extract_table_fields", return_value={"name": {}}):
+        with patch.object(schema_catalog, "extract_table_fields", return_value={"name": {}}):
             data = json.loads(t.build_insert_sql.invoke(
                 {"table": "master_categories", "values": {"bogus": "x"}}
             ))
@@ -1034,7 +1078,7 @@ class BuildWriteSqlTests(TestCase):
 
 class WebToolTests(TestCase):
     def test_fetch_web_content_blocks_private_host(self):
-        from apps.core.services.AI.Tools import plan_tools as t
+        from apps.core.services.AI.Agents.core import plan_tools as t
 
         data = json.loads(t.fetch_web_content.invoke({"url": "http://127.0.0.1/x"}))
         self.assertFalse(data["ok"])
@@ -1042,7 +1086,7 @@ class WebToolTests(TestCase):
     def test_search_web_disabled_provider(self):
         from unittest.mock import patch
 
-        from apps.core.services.AI.Tools import plan_tools as t
+        from apps.core.services.AI.Agents.core import plan_tools as t
 
         with patch.object(
             t.config, "get",
@@ -1055,7 +1099,7 @@ class WebToolTests(TestCase):
     def test_search_web_parses_ddg_html(self):
         from unittest.mock import patch
 
-        from apps.core.services.AI.Tools import plan_tools as t
+        from apps.core.services.AI.Agents.core import plan_tools as t
 
         html = (
             '<html><body>'
@@ -1095,7 +1139,7 @@ class WebToolTests(TestCase):
 
 class AllowlistSettingsTests(TestCase):
     def test_defaults_include_product_and_sales_read_tables(self):
-        from apps.core.services.AI.Agents import settings
+        from apps.core.services.AI.Agents.core import settings
 
         self.assertIn("master_categories", settings.ALLOWED_READ_TABLES)
         self.assertIn("products", settings.QUERY_ALLOWED_TABLES)
@@ -1105,14 +1149,14 @@ class AllowlistSettingsTests(TestCase):
         self.assertNotIn("products", settings.ALLOWED_READ_TABLES)
 
     def test_env_tuple_splits_and_trims(self):
-        from apps.core.services.AI.Agents import settings
+        from apps.core.services.AI.Agents.core import settings
 
         self.assertEqual(settings._env_tuple("X", ("a", "b")), ("a", "b"))
 
-    def test_utils_ai_settings_resolves_same_tuples(self):
-        from apps.core.services.AI.Tools import utils
+    def test_settings_allowlist_resolves_same_tuples(self):
+        from apps.core.services.AI.Agents.core import settings
 
-        self.assertIn("products", utils.ai_settings().QUERY_ALLOWED_TABLES)
+        self.assertIn("products", settings.QUERY_ALLOWED_TABLES)
 
 
 class SchemaCatalogTests(TestCase):
@@ -1143,12 +1187,12 @@ class SchemaCatalogTests(TestCase):
         import tempfile
         from unittest.mock import patch
 
-        from apps.core.services.AI.Tools import utils
+        from apps.core.services.AI.Agents.core import master_api, schema_catalog
 
         with tempfile.TemporaryDirectory() as tmp_dir:
             self._write_schema(tmp_dir)
-            with patch.object(utils, "SCHEMA_DIR", type(utils.SCHEMA_DIR)(tmp_dir)):
-                catalog = utils.load_schema_catalog(reload=True)
+            with patch.object(schema_catalog, "SCHEMA_DIR", type(schema_catalog.SCHEMA_DIR)(tmp_dir)):
+                catalog = schema_catalog.load_schema_catalog(reload=True)
 
         fields = catalog.get("master_categories")
         self.assertIsNotNone(fields)
@@ -1163,13 +1207,13 @@ class SchemaCatalogTests(TestCase):
         import tempfile
         from unittest.mock import patch
 
-        from apps.core.services.AI.Tools import utils
+        from apps.core.services.AI.Agents.core import master_api, schema_catalog
 
         with tempfile.TemporaryDirectory() as tmp_dir:
             self._write_schema(tmp_dir)
-            with patch.object(utils, "SCHEMA_DIR", type(utils.SCHEMA_DIR)(tmp_dir)):
-                utils.load_schema_catalog(reload=True)
-                text = utils.render_schema_catalog(["master_categories"])
+            with patch.object(schema_catalog, "SCHEMA_DIR", type(schema_catalog.SCHEMA_DIR)(tmp_dir)):
+                schema_catalog.load_schema_catalog(reload=True)
+                text = schema_catalog.render_schema_catalog(["master_categories"])
 
         self.assertIn("parent_id", text)
         self.assertIn("-> master_categories.id", text)
@@ -1197,7 +1241,7 @@ class SqlBuilderWorkerTests(TestCase):
         return _Tool(content)
 
     def test_parse_result_keeps_select_strips_write(self):
-        from apps.core.services.AI.Agents.worker_product_sql_builder import (
+        from apps.core.services.AI.Agents.domains.product.workers.sql_builder import (
             ProductSqlBuilderWorker,
         )
 
@@ -1220,7 +1264,7 @@ class SqlBuilderWorkerTests(TestCase):
         self.assertTrue(any("UPDATE" in r for r in result["risks"]))
 
     def test_parse_result_collects_executed_queries(self):
-        from apps.core.services.AI.Agents.worker_product_sql_builder import (
+        from apps.core.services.AI.Agents.domains.product.workers.sql_builder import (
             ProductSqlBuilderWorker,
         )
 
@@ -1241,7 +1285,7 @@ class SqlBuilderWorkerTests(TestCase):
         self.assertEqual(result["queries"][0]["rowCount"], 1)
 
     def test_parse_result_flags_non_executable_table(self):
-        from apps.core.services.AI.Agents.worker_product_sql_builder import (
+        from apps.core.services.AI.Agents.domains.product.workers.sql_builder import (
             ProductSqlBuilderWorker,
         )
 
@@ -1256,7 +1300,7 @@ class SqlBuilderWorkerTests(TestCase):
         self.assertTrue(any("outside AI_QUERY_TABLES" in m for m in result["missing_data"]))
 
     def test_parse_result_without_json_reports_error(self):
-        from apps.core.services.AI.Agents.worker_product_sql_builder import (
+        from apps.core.services.AI.Agents.domains.product.workers.sql_builder import (
             ProductSqlBuilderWorker,
         )
 
@@ -1266,7 +1310,7 @@ class SqlBuilderWorkerTests(TestCase):
         self.assertIn("error", result)
 
     def test_tables_in_sql_extracts_from_and_join(self):
-        from apps.core.services.AI.Agents.worker_product_sql_builder import _tables_in_sql
+        from apps.core.services.AI.Agents.domains.product.workers.sql_builder import _tables_in_sql
 
         tables = _tables_in_sql(
             "SELECT c.name FROM master_categories c "
@@ -1275,7 +1319,7 @@ class SqlBuilderWorkerTests(TestCase):
         self.assertEqual(tables, ["master_categories", "master_product_category_attribute_assign"])
 
     def test_build_product_sql_tool_is_registered(self):
-        from apps.core.services.AI.Agents import manager_product as m
+        from apps.core.services.AI.Agents.domains.product import manager as m
 
         names = {t.name for t in m._MANAGER_WORKER_TOOLS}
         self.assertIn("build_product_sql", names)
@@ -1289,7 +1333,7 @@ class ManagerGeneralTests(TestCase):
     """Conversation memory, compaction and slash-command parsing."""
 
     def test_parse_command_table(self):
-        from apps.core.services.AI.Agents.manager_general import parse_command
+        from apps.core.services.AI.Agents.core.router import parse_command
 
         self.assertEqual(parse_command("").name, "empty")
         self.assertEqual(parse_command("/q").name, "quit")
@@ -1323,7 +1367,7 @@ class ManagerGeneralTests(TestCase):
         self.assertEqual((cmd.name, cmd.mode, cmd.text), ("message", "act", ""))
 
     def test_compact_replaces_history_with_summary(self):
-        from apps.core.services.AI.Agents.manager_general import ConversationMemory
+        from apps.core.services.AI.Agents.core.memory import ConversationMemory
 
         class _FakeLLM:
             def invoke(self, messages):
@@ -1349,7 +1393,7 @@ class ManagerGeneralTests(TestCase):
         self.assertFalse(mem.compact()["compacted"])
 
     def test_compact_noop_when_already_minimal(self):
-        from apps.core.services.AI.Agents.manager_general import ConversationMemory
+        from apps.core.services.AI.Agents.core.memory import ConversationMemory
 
         mem = ConversationMemory()
         self.assertFalse(mem.compact()["compacted"])
@@ -1357,7 +1401,7 @@ class ManagerGeneralTests(TestCase):
     def test_record_stores_rendered_plan(self):
         import json
 
-        from apps.core.services.AI.Agents.manager_general import ConversationMemory
+        from apps.core.services.AI.Agents.core.memory import ConversationMemory
 
         mem = ConversationMemory()
         mem.record("do x", {"summary": "did", "plan": ["a"], "sql": [], "risks": []})
@@ -1366,7 +1410,7 @@ class ManagerGeneralTests(TestCase):
         self.assertEqual(json.loads(mem.messages[1][1])["summary"], "did")
 
     def test_reset_clears_messages(self):
-        from apps.core.services.AI.Agents.manager_general import ConversationMemory
+        from apps.core.services.AI.Agents.core.memory import ConversationMemory
 
         mem = ConversationMemory()
         mem.record("a", {"summary": "b"})
@@ -1384,7 +1428,7 @@ class GeneralRoutingTests(TestCase):
     """The general agent classifies and dispatches to product / sales."""
 
     def test_pinned_skips_router(self):
-        from apps.core.services.AI.Agents.manager_general import GeneralManagerAgent
+        from apps.core.services.AI.Agents.core.router import GeneralManagerAgent
 
         class _FakeLLM:
             def invoke(self, messages):
@@ -1394,7 +1438,7 @@ class GeneralRoutingTests(TestCase):
         self.assertEqual(agent.classify("list master tables"), "product")
 
     def test_llm_router_selects_sales(self):
-        from apps.core.services.AI.Agents.manager_general import GeneralManagerAgent
+        from apps.core.services.AI.Agents.core.router import GeneralManagerAgent
 
         class _FakeLLM:
             def invoke(self, messages):
@@ -1408,7 +1452,7 @@ class GeneralRoutingTests(TestCase):
         self.assertEqual(agent.last_domain, "sales")
 
     def test_keyword_fallback_when_llm_returns_junk(self):
-        from apps.core.services.AI.Agents.manager_general import GeneralManagerAgent
+        from apps.core.services.AI.Agents.core.router import GeneralManagerAgent
 
         class _FakeLLM:
             def invoke(self, messages):
@@ -1421,14 +1465,14 @@ class GeneralRoutingTests(TestCase):
         self.assertEqual(agent.classify("packing list for this shipment"), "sales")
 
     def test_keyword_classify_product(self):
-        from apps.core.services.AI.Agents.manager_general import GeneralManagerAgent
+        from apps.core.services.AI.Agents.core.router import GeneralManagerAgent
 
         self.assertEqual(
             GeneralManagerAgent._keyword_classify("add a new category"), "product"
         )
 
     def test_stream_routes_to_domain_and_records(self):
-        from apps.core.services.AI.Agents.manager_general import GeneralManagerAgent
+        from apps.core.services.AI.Agents.core.router import GeneralManagerAgent
 
         agent = GeneralManagerAgent(pinned="product")
         calls = []
@@ -1454,15 +1498,164 @@ class GeneralRoutingTests(TestCase):
     def test_act_guards_and_executes(self):
         from unittest.mock import patch
 
-        from apps.core.services.AI.Agents.manager_general import GeneralManagerAgent
+        from apps.core.services.AI.Agents.core.router import GeneralManagerAgent
 
         agent = GeneralManagerAgent(pinned="product")
         plan = {"summary": "s", "sql": [{"statement": "SELECT 1;"}], "risks": []}
         with patch(
-            "apps.core.services.AI.Agents.manager_general.execute_plan",
+            "apps.core.services.AI.Agents.core.router.execute_plan",
             return_value=[{"verb": "SELECT", "ok": True}],
         ) as ep:
             _, executed = agent.act(plan, dry_run=True)
         self.assertEqual(executed, [{"verb": "SELECT", "ok": True}])
         ep.assert_called_once()
+
+
+class GuardrailTests(TestCase):
+    """The single SQL guardrail (core/guardrail.py)."""
+
+    def test_multi_statement_rejected(self):
+        from apps.core.services.AI.Agents.core import guardrail
+
+        plan = {"sql": [{"statement": "SELECT 1; DELETE FROM master_categories;"}],
+                "drafts": [], "risks": []}
+        cleaned = guardrail.assert_plan_sql(plan, mode="plan")
+        self.assertEqual(cleaned["sql"], [])
+        self.assertTrue(any("multiple" in r for r in cleaned["risks"]))
+
+    def test_cte_delete_rejected_in_plan(self):
+        from apps.core.services.AI.Agents.core import guardrail
+
+        statement = "WITH x AS (SELECT id FROM master_categories) DELETE FROM x;"
+        plan = {"sql": [{"statement": statement}], "drafts": [], "risks": []}
+        cleaned = guardrail.assert_plan_sql(plan, mode="plan")
+        self.assertEqual(cleaned["sql"], [])
+        self.assertTrue(any("DELETE" in r for r in cleaned["risks"]))
+
+    def test_delete_without_where_rejected_in_act(self):
+        from apps.core.services.AI.Agents.core import guardrail
+
+        plan = {"sql": [{"statement": "DELETE FROM master_categories;"}],
+                "drafts": [], "risks": []}
+        cleaned = guardrail.assert_plan_sql(plan, mode="act")
+        self.assertEqual(cleaned["sql"], [])
+        self.assertTrue(any("WHERE" in r for r in cleaned["risks"]))
+
+    def test_update_capped_with_limit_in_act(self):
+        from apps.core.services.AI.Agents.core import guardrail
+
+        plan = {"sql": [{"statement": "UPDATE master_categories SET name='y' WHERE id='c1';"}],
+                "drafts": [], "risks": []}
+        cleaned = guardrail.assert_plan_sql(plan, mode="act")
+        self.assertIn("LIMIT", cleaned["sql"][0]["statement"])
+
+    def test_drafts_filtered_independently(self):
+        from apps.core.services.AI.Agents.core import guardrail
+
+        plan = {
+            "sql": [{"statement": "SELECT 1;"}],
+            "drafts": [{"statement": "DROP TABLE master_categories;"}],
+            "risks": [],
+        }
+        cleaned = guardrail.assert_plan_sql(plan, mode="plan")
+        self.assertEqual(len(cleaned["sql"]), 1)
+        self.assertEqual(cleaned["drafts"], [])
+        self.assertTrue(any("DROP" in r for r in cleaned["risks"]))
+
+    def test_comments_rejected(self):
+        from apps.core.services.AI.Agents.core import guardrail
+
+        decision = guardrail.validate_statement(
+            "SELECT 1; -- sneaky", mode="plan"
+        )
+        self.assertFalse(decision.ok)
+
+    def test_string_semicolon_is_not_multi_statement(self):
+        from apps.core.services.AI.Agents.core import guardrail
+
+        decision = guardrail.validate_statement(
+            "SELECT 'a;b' AS x;", mode="plan"
+        )
+        self.assertTrue(decision.ok)
+
+
+class WorkerResultContractTests(TestCase):
+    def test_roundtrip_preserves_extra_fields(self):
+        from apps.core.services.AI.Agents.core.contracts import WorkerResult
+
+        payload = {
+            "worker": "product_price",
+            "ok": True,
+            "summary": "s",
+            "data": {"tiers": [{"min_qty": 10, "sale_price": 1.0}]},
+            "sql": [{"statement": "INSERT INTO product_sale_prices_by_qty ..."}],
+            "missing_data": [],
+            "risks": [],
+        }
+        parsed = WorkerResult.from_tool_content(payload)
+        self.assertIsNotNone(parsed)
+        self.assertEqual(parsed.worker, "product_price")
+        self.assertEqual(parsed.data["tiers"][0]["min_qty"], 10)
+
+    def test_failure_envelope_without_worker_is_surfaced(self):
+        # A bare error envelope (no "worker" key) must still be collected.
+        from apps.core.services.AI.Agents.core.engine import DomainManagerAgent
+
+        class _Msg:
+            type = "tool"
+            content = json.dumps({"ok": False, "error": "boom"})
+
+        worker_results, _ = DomainManagerAgent._collect_worker_results(
+            {"messages": [_Msg()]}
+        )
+        self.assertEqual(len(worker_results), 1)
+        self.assertFalse(worker_results[0]["ok"])
+        self.assertEqual(worker_results[0]["worker"], "unknown")
+
+
+class PlanStoreTests(TestCase):
+    def test_put_get_and_hash_mismatch(self):
+        from apps.core.services.AI.Agents.core import plan_store
+
+        plan = {"summary": "s", "sql": [{"statement": "SELECT 1;"}], "drafts": []}
+        plan_id, plan_hash = plan_store.put(plan, domain="product")
+        envelope = plan_store.get(plan_id, plan_hash=plan_hash)
+        self.assertEqual(envelope["plan"], plan)
+
+        with self.assertRaises(plan_store.PlanHashMismatch):
+            plan_store.get(plan_id, plan_hash="deadbeef")
+
+    def test_consume_removes_plan(self):
+        from apps.core.services.AI.Agents.core import plan_store
+
+        plan_id, _ = plan_store.put({"sql": []}, domain="product")
+        plan_store.consume(plan_id)
+        with self.assertRaises(plan_store.PlanNotFound):
+            plan_store.get(plan_id)
+
+
+class ToolSchemaTests(TestCase):
+    def test_build_sales_sql_coerces_csv_and_bool(self):
+        from unittest.mock import patch
+
+        from apps.core.services.AI.Agents.domains.sales.tools import build_sales_sql
+        from apps.core.services.AI.Agents.domains.product.workers.sql_builder import ProductSqlBuilderWorker
+
+        seen = {}
+
+        def fake_plan(self, question, tables=None, execute=True):
+            seen["tables"] = tables
+            seen["execute"] = execute
+            return {"worker": "sales_sql_builder", "ok": True, "sql": [],
+                    "summary": "ok", "missing_data": [], "risks": []}
+
+        with patch.object(ProductSqlBuilderWorker, "plan", fake_plan):
+            build_sales_sql.invoke(
+                {"question": "q", "tables": "sales_quotations, master_currencies",
+                 "execute": "false"}
+            )
+
+        self.assertEqual(seen["tables"], ["sales_quotations", "master_currencies"])
+        self.assertFalse(seen["execute"])
+
 
