@@ -27,6 +27,7 @@ from apps.core.services.AI.Agents.worker_product_name import ProductNameWorker
 from apps.core.services.AI.Agents.worker_web_research import WebResearchWorker
 from apps.core.services.AI.Agents.worker_product_price import ProductPriceWorker
 from apps.core.services.AI.Agents.worker_product_attributes import ProductAttributesWorker
+from apps.core.services.AI.Agents.worker_product_sql_builder import ProductSqlBuilderWorker
 
 
 def _json_body(request):
@@ -312,6 +313,48 @@ def product_attributes_worker(request):
 
     try:
         result = ProductAttributesWorker().plan(str(task))
+    except Exception as exc:  # noqa: BLE001 - surface the error to the caller
+        return JsonResponse({"error": str(exc)}, status=500)
+    return JsonResponse(result)
+
+
+@csrf_exempt
+@require_http_methods(["POST"])
+def product_sql_builder_worker(request):
+    """Build + run a read-only SELECT from a business question."""
+    body = _json_body(request)
+    question = (
+        body.get("request")
+        or body.get("question")
+        or body.get("task")
+        or body.get("message")
+        or ""
+    )
+    if not str(question).strip():
+        return JsonResponse({"error": "missing 'request' field"}, status=400)
+
+    tables = body.get("tables") or []
+    if not isinstance(tables, list):
+        tables = [tables]
+    execute = body.get("execute") is not False
+
+    want_stream = body.get("stream") is True or request.GET.get("stream") in ("1", "true")
+    if want_stream:
+
+        def events():
+            for event in ProductSqlBuilderWorker().stream(
+                str(question), tables=tables, execute=execute
+            ):
+                yield json.dumps(event, ensure_ascii=False) + "\n"
+
+        response = StreamingHttpResponse(events(), content_type="application/x-ndjson")
+        response["X-Accel-Buffering"] = "no"
+        return response
+
+    try:
+        result = ProductSqlBuilderWorker().plan(
+            str(question), tables=tables, execute=execute
+        )
     except Exception as exc:  # noqa: BLE001 - surface the error to the caller
         return JsonResponse({"error": str(exc)}, status=500)
     return JsonResponse(result)

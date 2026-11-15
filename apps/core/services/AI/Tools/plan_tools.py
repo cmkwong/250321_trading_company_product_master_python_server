@@ -29,7 +29,7 @@ def list_master_tables() -> str:
         return utils._tool_error(exc)
     schemas = data.get("schemas", {})
     names = sorted(schemas.keys()) if isinstance(schemas, dict) else []
-    allowed = [n for n in names if n in utils.ALLOWED_READ_TABLES]
+    allowed = [n for n in names if n in utils.ai_settings().QUERY_ALLOWED_TABLES]
     return json.dumps(
         {"ok": True, "readable_tables": allowed},
         ensure_ascii=False,
@@ -532,10 +532,11 @@ def build_insert_sql(table: str, values: Dict[str, Any]) -> str:
     """Draft ONE INSERT for a write-allowed master table. Returns SQL text for review in /plan mode; nothing is executed. Columns are validated against the Node schema files."""
     try:
         table = (table or "").strip()
-        if table not in utils.WRITE_ALLOWED_TABLES:
+        write_tables = utils.ai_settings().WRITE_ALLOWED_TABLES
+        if table not in write_tables:
             raise utils.MasterApiError(
                 f"Table not allowed for writing: {table}",
-                hint=f"Allowed tables: {', '.join(utils.WRITE_ALLOWED_TABLES)}",
+                hint=f"Allowed tables: {', '.join(write_tables)}",
             )
         fields = utils.extract_table_fields(table) or {}
         if not fields:
@@ -577,10 +578,11 @@ def build_update_sql(table: str, set_values: Dict[str, Any], where: str = "") ->
     """Draft ONE UPDATE for a write-allowed master table. `where` is required (no full-table updates). Returns SQL text for review; nothing is executed."""
     try:
         table = (table or "").strip()
-        if table not in utils.WRITE_ALLOWED_TABLES:
+        write_tables = utils.ai_settings().WRITE_ALLOWED_TABLES
+        if table not in write_tables:
             raise utils.MasterApiError(
                 f"Table not allowed for writing: {table}",
-                hint=f"Allowed tables: {', '.join(utils.WRITE_ALLOWED_TABLES)}",
+                hint=f"Allowed tables: {', '.join(write_tables)}",
             )
         fields = utils.extract_table_fields(table) or {}
         if not fields:

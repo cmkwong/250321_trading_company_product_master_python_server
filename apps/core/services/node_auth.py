@@ -15,6 +15,9 @@ from __future__ import annotations
 
 import base64
 import json
+import logging
+import os
+import sys
 import threading
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Optional
@@ -32,6 +35,8 @@ REQUEST_TIMEOUT = float(config.get("MASTER_API_TIMEOUT", "20"))
 TOKEN_EXPIRY_SKEW = timedelta(minutes=5)
 FALLBACK_TTL = timedelta(hours=1)
 
+logger = logging.getLogger(__name__)
+
 
 class NodeAuthError(Exception):
     """Raised when a service token cannot be obtained or refreshed."""
@@ -42,6 +47,49 @@ class NodeAuthError(Exception):
 
 
 _session: Optional[requests.Session] = None
+
+_django_ready = False
+
+
+def _ensure_django() -> bool:
+    """Configure Django lazily when running outside the web server.
+
+    The standalone CLI (``codes/main.py``) imports the AI tools directly, so
+    Django may not be configured when the first Node token is requested.
+    Importing ``apps.core.models`` then raises ``ImproperlyConfigured`` and the
+    lookup silently falls back to ``.env``.  Configure Django once, using
+    ``config.BASE_DIR`` for ``sys.path`` so the call site's cwd does not matter.
+    Returns ``True`` when the ORM is usable, ``False`` otherwise (so callers can
+    keep their existing ``.env`` fallback).
+    """
+    global _django_ready
+    if _django_ready:
+        return True
+    try:
+        from django.apps import apps as django_apps
+    except ImportError:
+        return False
+    if django_apps.ready:
+        _django_ready = True
+        return True
+    try:
+        base_dir = str(config.BASE_DIR)
+        if base_dir not in sys.path:
+            sys.path.insert(0, base_dir)
+        os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings")
+        import django
+
+        django.setup()
+        _django_ready = True
+        return True
+    except Exception as exc:  # noqa: BLE001 - keep the .env fallback working
+        logger.warning(
+            "Could not bootstrap Django for the NodeServiceAccount lookup "
+            "(%s: %s); falling back to .env.",
+            type(exc).__name__,
+            exc,
+        )
+        return False
 
 
 def _get_session() -> requests.Session:
@@ -76,20 +124,43 @@ def _decode_expiry(token: str) -> Optional[datetime]:
 
 
 def _load_account() -> Optional[Dict[str, str]]:
-    """Return {email, password, name} from the DB row, or the env fallback."""
-    try:
-        from apps.core.models import NodeServiceAccount
+    """Return {email, password, name} for the active service account, or None.
 
-        row = NodeServiceAccount.objects.filter(is_active=True).order_by("id").first()
-        if row is not None:
-            return {"email": row.email, "password": row.password, "name": row.name}
-    except Exception:  # noqa: BLE001 - missing table / no Django app / not configured
-        pass
+    Only the columns needed for the token exchange are read, and a failed lookup
+    is logged instead of swallowed, so a schema drift surfaces in the server log
+    rather than later as an unexplained NODE_AUTH_NOT_CONFIGURED.
+    """
+    if not _ensure_django():
+        logger.debug("Django unavailable; using .env credentials.")
+    else:
+        try:
+            from apps.core.models import NodeServiceAccount
+
+            row = (
+                NodeServiceAccount.objects.filter(is_active=True)
+                .order_by("id")
+                .values("email", "password", "first_name", "last_name")
+                .first()
+            )
+            if row is not None:
+                name = f"{row['first_name']} {row['last_name']}".strip()
+                return {
+                    "email": row["email"],
+                    "password": row["password"],
+                    "name": name or row["email"],
+                }
+            logger.debug("No active NodeServiceAccount row; using .env credentials.")
+        except Exception as exc:  # noqa: BLE001 - missing table / no app / schema drift
+            logger.warning(
+                "NodeServiceAccount lookup failed (%s: %s); falling back to .env.",
+                type(exc).__name__,
+                exc,
+            )
 
     email = str(config.get("MASTER_API_EMAIL", "") or "").strip()
     password = str(config.get("MASTER_API_PASSWORD", "") or "")
     if email and password:
-        return {"email": email, "password": password, "name": "env"}
+        return {"email": email, "password": password, "name": email}
 
     return None
 
@@ -98,6 +169,9 @@ def _persist_token(
     email: str, role: str, token: str, expires_at: Optional[datetime]
 ) -> None:
     try:
+        if not _ensure_django():
+            return
+
         from apps.core.models import NodeServiceAccount
 
         NodeServiceAccount.objects.filter(email=email, is_active=True).update(
@@ -105,8 +179,12 @@ def _persist_token(
             token=token,
             token_expires_at=expires_at,
         )
-    except Exception:  # noqa: BLE001 - best-effort persistence
-        pass
+    except Exception as exc:  # noqa: BLE001 - best-effort persistence
+        logger.warning(
+            "Could not cache the Node token on the NodeServiceAccount row (%s: %s).",
+            type(exc).__name__,
+            exc,
+        )
 
 
 def invalidate_service_token() -> None:

@@ -313,6 +313,7 @@ class ProductMasterAgentStreamTests(TestCase):
         from unittest.mock import patch
 
         from apps.core.services.AI.Agents import manager_product as p
+        from apps.core.services.AI.Agents import manager_general as g
 
         class _Chunk:
             def __init__(self, content=""):
@@ -330,7 +331,7 @@ class ProductMasterAgentStreamTests(TestCase):
 
         agent = p.ProductMasterAgent()
         with patch.object(agent, "_get_agent", return_value=_SlowAgent()):
-            with patch.object(p, "HEARTBEAT_SECONDS", 0.2):
+            with patch.object(g, "HEARTBEAT_SECONDS", 0.2):
                 events = list(agent.stream("do it"))
 
         heartbeats = [
@@ -340,6 +341,103 @@ class ProductMasterAgentStreamTests(TestCase):
         ]
         self.assertTrue(heartbeats)
         self.assertTrue(any(e["type"] == "plan" for e in events))
+
+    def test_stream_replays_history_for_follow_up_turns(self):
+        from unittest.mock import patch
+
+        from apps.core.services.AI.Agents import manager_product as p
+
+        class _Msg:
+            def __init__(self, type_="ai", content=""):
+                self.type = type_
+                self.content = content
+
+        seen = []
+
+        class _RecordingAgent:
+            def stream(self, inp, config=None, stream_mode=None):
+                messages = list(inp["messages"])
+                seen.append(messages)
+                final = messages + [_Msg("ai", json.dumps({"summary": "ok"}))]
+                yield ("values", {"messages": final})
+
+        agent = p.ProductMasterAgent()
+        with patch.object(agent, "_get_agent", return_value=_RecordingAgent()):
+            list(agent.stream("first question"))
+            list(agent.stream("second question"))
+
+        # Turn one sees only the new human message.
+        self.assertEqual(len(seen[0]), 1)
+        # Turn two replays the first turn before the new human message, so the
+        # model keeps the conversation context.
+        self.assertEqual(len(seen[1]), 3)
+        self.assertEqual(seen[1][0][0], "human")
+        self.assertEqual(seen[1][1].type, "ai")
+        self.assertEqual(seen[1][2][0], "human")
+        self.assertIn("second question", seen[1][2][1])
+
+        agent.reset()
+        self.assertEqual(agent.messages, [])
+
+
+class ProductMasterCommandTests(TestCase):
+    """The -mp / -mg commands are REPLs that keep the conversation until /q."""
+
+    def test_mp_loop_keeps_conversation_until_quit(self):
+        import builtins
+        from unittest.mock import patch
+
+        from codes.CommandChecker import CommandChecker
+        from apps.core.services.AI.Agents import manager_general as g
+
+        tasks_seen = []
+        compacted = []
+        resets = []
+
+        class _FakeAgent:
+            def __init__(self, pinned=None, **kwargs):
+                self.pinned = pinned
+                self.last_plan = None
+
+            def reset(self):
+                resets.append(True)
+
+            def compact(self, force=True):
+                compacted.append(force)
+                return {"compacted": True, "before": 4, "after": 2, "words": 10}
+
+            def stream(self, task, domain=None):
+                tasks_seen.append(task)
+                plan = {"summary": task, "plan": [], "sql": [], "risks": []}
+                yield {"type": "plan", "plan": plan, "text": "Summary: " + task}
+
+            def act(self, plan, dry_run=True):
+                return plan, []
+
+        # Bypass __init__: it wires up browser / ollama controllers we do not need.
+        checker = object.__new__(CommandChecker)
+        checker.COMMAND_CHECKED = "CHECKED"
+        checker.COMMAND_HIT = False
+        checker.ans = "-mp"
+
+        scripted = iter(
+            ["first question", "", "/help", "/compact", "second question", "/new", "/q", "never"]
+        )
+
+        def fake_input(prompt=""):
+            return next(scripted)
+
+        with patch.object(g, "GeneralManagerAgent", _FakeAgent), patch.object(
+            builtins, "input", fake_input
+        ), patch.object(builtins, "print"):
+            result = checker.product_master()
+
+        self.assertEqual(result, "CHECKED")
+        # Both questions ran in the same session; input after /q was not read.
+        self.assertEqual(tasks_seen, ["first question", "second question"])
+        # /compact and /new were handled by the loop.
+        self.assertEqual(compacted, [True])
+        self.assertEqual(len(resets), 1)
 
 
 class WorkerSqlGuardrailTests(TestCase):
@@ -592,7 +690,11 @@ class NodeServiceAccountTests(TestCase):
         from apps.core.services import node_auth
 
         NodeServiceAccount.objects.create(
-            name="ai-agent", email="ai@example.com", password="pw", is_active=True
+            first_name="Ai",
+            last_name="Agent",
+            email="ai@example.com",
+            password="pw",
+            is_active=True,
         )
         session = self._fake_session(self._make_token(3600))
         node_auth._cache.clear()
@@ -607,7 +709,7 @@ class NodeServiceAccountTests(TestCase):
         self.assertNotEqual(first, refreshed)
         self.assertEqual(session.post.call_count, 2)
 
-        acct = NodeServiceAccount.objects.get(name="ai-agent")
+        acct = NodeServiceAccount.objects.get(email="ai@example.com")
         self.assertEqual(acct.role, "developer")
         self.assertEqual(acct.token, refreshed)
 
@@ -636,7 +738,11 @@ class NodeServiceAccountTests(TestCase):
         from apps.core.services import node_auth
 
         NodeServiceAccount.objects.create(
-            name="ai-agent", email="ai@example.com", password="bad", is_active=True
+            first_name="Ai",
+            last_name="Agent",
+            email="ai@example.com",
+            password="bad",
+            is_active=True,
         )
         session = MagicMock()
         resp = MagicMock()
@@ -649,6 +755,75 @@ class NodeServiceAccountTests(TestCase):
                 node_auth.get_service_token()
         self.assertIn("NODE_AUTH_REJECTED", str(ctx.exception))
         self.assertTrue(ctx.exception.hint)
+
+
+    def test_load_account_uses_first_and_last_name(self):
+        from apps.core.models import NodeServiceAccount
+        from apps.core.services import node_auth
+
+        NodeServiceAccount.objects.create(
+            first_name="Ai",
+            last_name="Agent",
+            email="ai@example.com",
+            password="pw",
+            is_active=True,
+        )
+
+        account = node_auth._load_account()
+        self.assertEqual(account["email"], "ai@example.com")
+        self.assertEqual(account["password"], "pw")
+        self.assertEqual(account["name"], "Ai Agent")
+
+    def test_load_account_falls_back_to_email_when_names_blank(self):
+        from apps.core.models import NodeServiceAccount
+        from apps.core.services import node_auth
+
+        NodeServiceAccount.objects.create(
+            first_name="",
+            last_name="",
+            email="ai@example.com",
+            password="pw",
+            is_active=True,
+        )
+
+        self.assertEqual(node_auth._load_account()["name"], "ai@example.com")
+
+    def test_ensure_django_is_idempotent(self):
+        from apps.core.services import node_auth
+
+        # Under the test runner apps are already populated, so this must be a
+        # cheap no-op that reports success every time.
+        self.assertTrue(node_auth._ensure_django())
+        self.assertTrue(node_auth._ensure_django())
+
+    def test_ensure_django_bootstraps_standalone_process(self):
+        import os
+        import subprocess
+        import sys
+
+        from apps.core import config as core_config
+
+        # Simulate the CLI: a fresh interpreter with no DJANGO_SETTINGS_MODULE,
+        # started from an arbitrary cwd.  node_auth must bootstrap Django from
+        # config.BASE_DIR before touching the ORM.
+        code = (
+            "import sys; sys.path.insert(0, r'%s'); "
+            "from apps.core.services import node_auth; "
+            "print(node_auth._ensure_django()); "
+            "from django.apps import apps; print(apps.ready)"
+        ) % core_config.BASE_DIR
+        env = os.environ.copy()
+        env.pop("DJANGO_SETTINGS_MODULE", None)
+        result = subprocess.run(
+            [sys.executable, "-c", code],
+            cwd=os.path.dirname(core_config.BASE_DIR),
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.split(), ["True", "True"])
 
 
 class ParseModeTests(TestCase):
@@ -918,7 +1093,376 @@ class WebToolTests(TestCase):
         self.assertEqual(data["results"][0]["title"], "Example Pets")
 
 
+class AllowlistSettingsTests(TestCase):
+    def test_defaults_include_product_and_sales_read_tables(self):
+        from apps.core.services.AI.Agents import settings
+
+        self.assertIn("master_categories", settings.ALLOWED_READ_TABLES)
+        self.assertIn("products", settings.QUERY_ALLOWED_TABLES)
+        self.assertIn("product_names", settings.QUERY_ALLOWED_TABLES)
+        self.assertIn("sales_quotations", settings.QUERY_ALLOWED_TABLES)
+        self.assertIn("master_product_attributes", settings.WRITE_ALLOWED_TABLES)
+        self.assertNotIn("products", settings.ALLOWED_READ_TABLES)
+
+    def test_env_tuple_splits_and_trims(self):
+        from apps.core.services.AI.Agents import settings
+
+        self.assertEqual(settings._env_tuple("X", ("a", "b")), ("a", "b"))
+
+    def test_utils_ai_settings_resolves_same_tuples(self):
+        from apps.core.services.AI.Tools import utils
+
+        self.assertIn("products", utils.ai_settings().QUERY_ALLOWED_TABLES)
+
+
+class SchemaCatalogTests(TestCase):
+    def _write_schema(self, tmp_dir):
+        content = (
+            "module.exports = {\n"
+            "  TEST_CATS: {\n"
+            "    name: 'master_categories',\n"
+            "    fields: {\n"
+            "      id: { type: 'VARCHAR(36)', primaryKey: true },\n"
+            "      parent_id: {\n"
+            "        type: 'VARCHAR(36)',\n"
+            "        references: { table: 'master_categories', field: 'id', onDelete: 'SET NULL' },\n"
+            "      },\n"
+            "    },\n"
+            "    constraints: { uq: { type: 'UNIQUE', fields: ['name'] } },\n"
+            "  },\n"
+            "};\n"
+        )
+        import os
+
+        path = os.path.join(tmp_dir, "master.js")
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(content)
+        return path
+
+    def test_load_schema_catalog_parses_fields_and_fks(self):
+        import tempfile
+        from unittest.mock import patch
+
+        from apps.core.services.AI.Tools import utils
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            self._write_schema(tmp_dir)
+            with patch.object(utils, "SCHEMA_DIR", type(utils.SCHEMA_DIR)(tmp_dir)):
+                catalog = utils.load_schema_catalog(reload=True)
+
+        fields = catalog.get("master_categories")
+        self.assertIsNotNone(fields)
+        self.assertEqual(fields["id"]["type"], "VARCHAR(36)")
+        self.assertTrue(fields["id"]["primaryKey"])
+        self.assertEqual(fields["parent_id"]["references"]["table"], "master_categories")
+        self.assertEqual(fields["parent_id"]["references"]["field"], "id")
+        self.assertNotIn("references", fields)
+        self.assertNotIn("constraints", fields)
+
+    def test_render_schema_catalog_marks_foreign_keys(self):
+        import tempfile
+        from unittest.mock import patch
+
+        from apps.core.services.AI.Tools import utils
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            self._write_schema(tmp_dir)
+            with patch.object(utils, "SCHEMA_DIR", type(utils.SCHEMA_DIR)(tmp_dir)):
+                utils.load_schema_catalog(reload=True)
+                text = utils.render_schema_catalog(["master_categories"])
+
+        self.assertIn("parent_id", text)
+        self.assertIn("-> master_categories.id", text)
+
+
+class SqlBuilderWorkerTests(TestCase):
+    @staticmethod
+    def _ai_message(content):
+        class _Ai:
+            type = "ai"
+
+            def __init__(self, content):
+                self.content = content
+
+        return _Ai(content)
+
+    @staticmethod
+    def _tool_message(content):
+        class _Tool:
+            type = "tool"
+
+            def __init__(self, content):
+                self.content = content
+
+        return _Tool(content)
+
+    def test_parse_result_keeps_select_strips_write(self):
+        from apps.core.services.AI.Agents.worker_product_sql_builder import (
+            ProductSqlBuilderWorker,
+        )
+
+        worker = ProductSqlBuilderWorker.__new__(ProductSqlBuilderWorker)
+        payload = {
+            "answer": "3 categories",
+            "summary": "anti-join",
+            "sql": [
+                {"purpose": "lookup", "statement": "SELECT c.name FROM master_categories c;", "verification": ""},
+                {"purpose": "bad", "statement": "UPDATE master_categories SET name='x' WHERE id='1';", "verification": ""},
+            ],
+            "tables_used": ["master_categories"],
+        }
+        result = worker._parse_result({"messages": [self._ai_message(json.dumps(payload))]})
+
+        self.assertTrue(result["ok"])
+        statements = [s["statement"] for s in result["sql"]]
+        self.assertTrue(any(s.startswith("SELECT") for s in statements))
+        self.assertFalse(any("UPDATE" in s for s in statements))
+        self.assertTrue(any("UPDATE" in r for r in result["risks"]))
+
+    def test_parse_result_collects_executed_queries(self):
+        from apps.core.services.AI.Agents.worker_product_sql_builder import (
+            ProductSqlBuilderWorker,
+        )
+
+        worker = ProductSqlBuilderWorker.__new__(ProductSqlBuilderWorker)
+        query_json = json.dumps({"ok": True, "query": "SELECT 1", "rowCount": 1, "rows": [{"1": 1}]})
+        payload = {
+            "answer": "one row",
+            "summary": "s",
+            "sql": [{"purpose": "p", "statement": "SELECT 1;", "verification": ""}],
+            "tables_used": [],
+        }
+        result = worker._parse_result(
+            {"messages": [self._ai_message(json.dumps(payload)), self._tool_message(query_json)]}
+        )
+
+        self.assertTrue(result["executed"])
+        self.assertEqual(len(result["queries"]), 1)
+        self.assertEqual(result["queries"][0]["rowCount"], 1)
+
+    def test_parse_result_flags_non_executable_table(self):
+        from apps.core.services.AI.Agents.worker_product_sql_builder import (
+            ProductSqlBuilderWorker,
+        )
+
+        worker = ProductSqlBuilderWorker.__new__(ProductSqlBuilderWorker)
+        payload = {
+            "answer": "a",
+            "summary": "s",
+            "sql": [{"purpose": "p", "statement": "SELECT * FROM master_invoice_types;", "verification": ""}],
+            "tables_used": [],
+        }
+        result = worker._parse_result({"messages": [self._ai_message(json.dumps(payload))]})
+        self.assertTrue(any("outside AI_QUERY_TABLES" in m for m in result["missing_data"]))
+
+    def test_parse_result_without_json_reports_error(self):
+        from apps.core.services.AI.Agents.worker_product_sql_builder import (
+            ProductSqlBuilderWorker,
+        )
+
+        worker = ProductSqlBuilderWorker.__new__(ProductSqlBuilderWorker)
+        result = worker._parse_result({"messages": [self._ai_message("just some prose, no JSON here")]})
+        self.assertFalse(result["ok"])
+        self.assertIn("error", result)
+
+    def test_tables_in_sql_extracts_from_and_join(self):
+        from apps.core.services.AI.Agents.worker_product_sql_builder import _tables_in_sql
+
+        tables = _tables_in_sql(
+            "SELECT c.name FROM master_categories c "
+            "LEFT JOIN master_product_category_attribute_assign a ON a.category_id = c.id"
+        )
+        self.assertEqual(tables, ["master_categories", "master_product_category_attribute_assign"])
+
+    def test_build_product_sql_tool_is_registered(self):
+        from apps.core.services.AI.Agents import manager_product as m
+
+        names = {t.name for t in m._MANAGER_WORKER_TOOLS}
+        self.assertIn("build_product_sql", names)
+
+    def test_worker_registry_contains_sql_builder(self):
+        from apps.core.services.AI.Agents import WORKERS
+
+        self.assertIn("product_sql_builder", WORKERS)
+
+class ManagerGeneralTests(TestCase):
+    """Conversation memory, compaction and slash-command parsing."""
+
+    def test_parse_command_table(self):
+        from apps.core.services.AI.Agents.manager_general import parse_command
+
+        self.assertEqual(parse_command("").name, "empty")
+        self.assertEqual(parse_command("/q").name, "quit")
+        self.assertEqual(parse_command("quit").name, "quit")
+        self.assertEqual(parse_command("/new").name, "reset")
+        self.assertEqual(parse_command("/compact").name, "compact")
+        self.assertEqual(parse_command("/dry").name, "dry")
+        self.assertEqual(parse_command("/live").name, "live")
+        self.assertEqual(parse_command("/help").name, "help")
+
+        cmd = parse_command("hello")
+        self.assertEqual(
+            (cmd.name, cmd.mode, cmd.domain, cmd.text),
+            ("message", "plan", None, "hello"),
+        )
+        cmd = parse_command("/act add material")
+        self.assertEqual(
+            (cmd.name, cmd.mode, cmd.domain, cmd.text),
+            ("message", "act", None, "add material"),
+        )
+        cmd = parse_command("/plan list categories")
+        self.assertEqual((cmd.name, cmd.mode), ("message", "plan"))
+        cmd = parse_command("/sales show quotations")
+        self.assertEqual(
+            (cmd.name, cmd.mode, cmd.domain, cmd.text),
+            ("message", "plan", "sales", "show quotations"),
+        )
+        cmd = parse_command("@product prices")
+        self.assertEqual((cmd.name, cmd.domain, cmd.text), ("message", "product", "prices"))
+        cmd = parse_command("/act")
+        self.assertEqual((cmd.name, cmd.mode, cmd.text), ("message", "act", ""))
+
+    def test_compact_replaces_history_with_summary(self):
+        from apps.core.services.AI.Agents.manager_general import ConversationMemory
+
+        class _FakeLLM:
+            def invoke(self, messages):
+                class _Resp:
+                    content = "A short summary of everything."
+
+                return _Resp()
+
+        mem = ConversationMemory()
+        mem.llm = _FakeLLM()
+        mem.record("list master tables", {"summary": "18 tables", "answer": "..."})
+        mem.record("how many?", {"summary": "18", "answer": "18"})
+        self.assertEqual(len(mem.messages), 4)
+
+        info = mem.compact(force=True)
+        self.assertTrue(info["compacted"])
+        self.assertEqual(info["before"], 4)
+        self.assertEqual(info["after"], 2)
+        self.assertEqual(len(mem.messages), 2)
+        self.assertIn("Summary of the conversation", mem.messages[0][1])
+
+        # A non-forced compact on an already-minimal history is a no-op.
+        self.assertFalse(mem.compact()["compacted"])
+
+    def test_compact_noop_when_already_minimal(self):
+        from apps.core.services.AI.Agents.manager_general import ConversationMemory
+
+        mem = ConversationMemory()
+        self.assertFalse(mem.compact()["compacted"])
+
+    def test_record_stores_rendered_plan(self):
+        import json
+
+        from apps.core.services.AI.Agents.manager_general import ConversationMemory
+
+        mem = ConversationMemory()
+        mem.record("do x", {"summary": "did", "plan": ["a"], "sql": [], "risks": []})
+        self.assertEqual(mem.messages[0], ("human", "do x"))
+        # The assistant turn is stored as a JSON summary (not prose).
+        self.assertEqual(json.loads(mem.messages[1][1])["summary"], "did")
+
+    def test_reset_clears_messages(self):
+        from apps.core.services.AI.Agents.manager_general import ConversationMemory
+
+        mem = ConversationMemory()
+        mem.record("a", {"summary": "b"})
+        mem.reset()
+        self.assertEqual(mem.messages, [])
 
 
 
+
+
+
+
+
+class GeneralRoutingTests(TestCase):
+    """The general agent classifies and dispatches to product / sales."""
+
+    def test_pinned_skips_router(self):
+        from apps.core.services.AI.Agents.manager_general import GeneralManagerAgent
+
+        class _FakeLLM:
+            def invoke(self, messages):
+                raise AssertionError("router must not run when pinned")
+
+        agent = GeneralManagerAgent(pinned="product", llm=_FakeLLM())
+        self.assertEqual(agent.classify("list master tables"), "product")
+
+    def test_llm_router_selects_sales(self):
+        from apps.core.services.AI.Agents.manager_general import GeneralManagerAgent
+
+        class _FakeLLM:
+            def invoke(self, messages):
+                class _Resp:
+                    content = '{"domain": "sales", "reason": "quotations"}'
+
+                return _Resp()
+
+        agent = GeneralManagerAgent(llm=_FakeLLM())
+        self.assertEqual(agent.classify("show the quotations"), "sales")
+        self.assertEqual(agent.last_domain, "sales")
+
+    def test_keyword_fallback_when_llm_returns_junk(self):
+        from apps.core.services.AI.Agents.manager_general import GeneralManagerAgent
+
+        class _FakeLLM:
+            def invoke(self, messages):
+                class _Resp:
+                    content = "not json at all"
+
+                return _Resp()
+
+        agent = GeneralManagerAgent(llm=_FakeLLM())
+        self.assertEqual(agent.classify("packing list for this shipment"), "sales")
+
+    def test_keyword_classify_product(self):
+        from apps.core.services.AI.Agents.manager_general import GeneralManagerAgent
+
+        self.assertEqual(
+            GeneralManagerAgent._keyword_classify("add a new category"), "product"
+        )
+
+    def test_stream_routes_to_domain_and_records(self):
+        from apps.core.services.AI.Agents.manager_general import GeneralManagerAgent
+
+        agent = GeneralManagerAgent(pinned="product")
+        calls = []
+
+        class _Sub:
+            def stream(self, task, history=None):
+                calls.append(("stream", task, history))
+                plan = {"summary": "done", "sql": [], "risks": []}
+                yield {"type": "plan", "plan": plan, "text": "Summary: done"}
+
+        agent._managers["product"] = _Sub()
+
+        out = list(agent.stream("do a thing"))
+        self.assertEqual(calls[0][0], "stream")
+        self.assertEqual(calls[0][1], "do a thing")
+        # First turn hands the (empty) history to the sub-agent.
+        self.assertEqual(calls[0][2], [])
+        self.assertTrue(any(e["type"] == "plan" for e in out))
+        # The finished turn was recorded as (human, ai).
+        self.assertEqual(len(agent.messages), 2)
+        self.assertEqual(agent.messages[0], ("human", "do a thing"))
+
+    def test_act_guards_and_executes(self):
+        from unittest.mock import patch
+
+        from apps.core.services.AI.Agents.manager_general import GeneralManagerAgent
+
+        agent = GeneralManagerAgent(pinned="product")
+        plan = {"summary": "s", "sql": [{"statement": "SELECT 1;"}], "risks": []}
+        with patch(
+            "apps.core.services.AI.Agents.manager_general.execute_plan",
+            return_value=[{"verb": "SELECT", "ok": True}],
+        ) as ep:
+            _, executed = agent.act(plan, dry_run=True)
+        self.assertEqual(executed, [{"verb": "SELECT", "ok": True}])
+        ep.assert_called_once()
 

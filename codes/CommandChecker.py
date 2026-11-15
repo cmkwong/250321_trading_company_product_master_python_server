@@ -15,19 +15,19 @@ from codes.utils import paramModel, timeModel, fileModel, inputModel, printModel
 from codes.utils.paramModel import command_check, params_check
 
 
-def _stream_product_plan(task):
-    """Stream the read-only product-master agent and return its guarded plan.
+def _stream_turn(agent, task, domain=None):
+    """Stream one turn of a running general-agent conversation.
+
+    The agent owns the conversation memory, so follow-up questions keep their
+    context automatically.  Returns the guarded plan, or ``None`` on failure.
 
     Module-level on purpose: ``codes/main.py`` calls every method on
     ``CommandChecker`` with no arguments while looking for a command match, so
     an undecorated helper method here would be invoked as a command.
     """
-    from apps.core.services.AI.Agents.manager_product import ProductMasterAgent
-
     plan = None
-    agent = ProductMasterAgent(mode="plan")
     try:
-        for event in agent.stream(task):
+        for event in agent.stream(task, domain=domain):
             if event["type"] == "token":
                 print(event["text"], end="", flush=True)
             elif event["type"] == "status":
@@ -42,6 +42,113 @@ def _stream_product_plan(task):
         print(f"\n[ERROR] {exc}", flush=True)
         return None
     return plan
+
+
+def _interactive_repl(checker, agent, prompt, title):
+    """Run the interactive multi-turn REPL for a general manager agent.
+
+    The loop lives here (it owns ``input``/``print``); command parsing and the
+    act execution live on the agent / :mod:`manager_general`.
+    """
+    from apps.core.services.AI.Agents.manager_general import (
+        assert_plan_sql,
+        format_plan,
+        parse_command,
+    )
+    from apps.core import config
+
+    # command_check leaves COMMAND_HIT set and only params_check clears it; this
+    # command prompts inside its own loop instead, so reset it here.
+    checker.COMMAND_HIT = False
+
+    allow_act = str(config.get("AI_ALLOW_ACT", "0")).strip().lower() in (
+        "1", "true", "yes",
+    )
+    dry_run = str(config.get("AI_ACT_DRY_RUN", "1")).strip().lower() in (
+        "1", "true", "yes",
+    )
+
+    print(f"\n=== {title} agent ===")
+    print("Type a request; the conversation continues until you type /q.")
+    print("/q quit  |  /new reset context  |  /compact summarise  |  /dry on  |  /live off")
+    print("Prefix /plan (default) or /act to execute this turn; /product or /sales to force a domain.\n")
+
+    while True:
+        try:
+            raw = input(prompt)
+        except (EOFError, KeyboardInterrupt):
+            print()
+            break
+
+        cmd = parse_command(raw)
+
+        if cmd.name == "empty":
+            continue
+        if cmd.name == "quit":
+            break
+        if cmd.name == "reset":
+            agent.reset()
+            print("[context cleared]")
+            continue
+        if cmd.name == "dry":
+            dry_run = True
+            print("[dry run on: writes are simulated]")
+            continue
+        if cmd.name == "live":
+            dry_run = False
+            print("[dry run OFF: /act writes will be applied]")
+            continue
+        if cmd.name == "help":
+            print(
+                "Type a request to plan. '/act <task>' plans then executes that "
+                "turn; '/act' alone executes the last plan; '/compact' summarises "
+                "the conversation; '/q' quits."
+            )
+            continue
+        if cmd.name == "compact":
+            info = agent.compact(force=True)
+            if info.get("compacted"):
+                print(f"[compact] {info['before']} -> {info['after']} messages "
+                      f"({info['words']} words)")
+            else:
+                print("[compact] nothing to compact (already minimal)")
+            continue
+
+        # ---- message / act turn ----
+        if not cmd.text:
+            if cmd.mode != "act":
+                print("Type a request, or /q to quit.")
+                continue
+            if getattr(agent, "last_plan", None) is None:
+                print("No plan yet. Ask for a change first, then type '/act'.")
+                continue
+            plan = agent.last_plan
+            print(format_plan(plan))
+        else:
+            plan = _stream_turn(agent, cmd.text, domain=cmd.domain)
+            if plan is None:
+                continue
+            agent.last_plan = plan
+
+        if cmd.mode != "act":
+            continue
+
+        if not allow_act:
+            print("act mode is disabled; set AI_ALLOW_ACT=1 in .env")
+            continue
+        plan = assert_plan_sql(plan, mode="act")
+        if not plan.get("sql"):
+            print("\nNothing to execute: the plan has no SQL statements.")
+            continue
+        if not inputModel.user_confirm():
+            print("Cancelled.")
+            continue
+        plan, executed = agent.act(plan, dry_run=dry_run)
+        print(format_plan(plan, executed))
+
+    # main.py breaks its dispatch loop only on CHECKED; returning anything else
+    # (or None) would leave self.ans as None and crash the next command.
+    return checker.COMMAND_CHECKED
 
 
 class CommandChecker:
@@ -67,9 +174,6 @@ class CommandChecker:
 
         # variables
         self.Product_Index = ""
-
-        # last reviewed product-master plan (used by '/act' in the -mp command)
-        self._last_product_plan = None
 
         # control variable
         self.QUIT = "quit"
@@ -352,60 +456,26 @@ class CommandChecker:
         self.alibabaController.rename_edited_folder_image_by_similarity(**params)
         return self.COMMAND_CHECKED
 
-    # ---- product-master maintenance agent (LangChain + Ollama qwen3.5) ----
-    # One command: type a task, optionally prefixed with /plan or /act.
-    # /plan (or no token) streams a read-only plan and stores it; /act executes
-    # the last reviewed plan (or a fresh plan when a task is supplied) after a
-    # y/N confirmation, through the deterministic execute_plan guardrail.
+    # ---- product-master / general manager agent (LangChain + Ollama qwen3.5) ----
+    # Both commands run the same interactive REPL (see _interactive_repl): every
+    # message stays in the same conversation until /q.  -mp is pinned to the
+    # product domain (no routing); -mg routes each turn to product or sales.
     @command_check(["mp"])
-    @params_check({"task": ["", str], "dry_run": [True, bool]})
     def product_master(self, **params):
-        from apps.core.services.AI.Agents.manager_product import (
-            format_plan,
-            parse_mode,
-            assert_plan_sql,
+        from apps.core.services.AI.Agents.manager_general import GeneralManagerAgent
+        return _interactive_repl(
+            self,
+            GeneralManagerAgent(pinned="product"),
+            prompt="mp> ",
+            title="product-master",
         )
-        from apps.core.services.AI.Tools.act_tools import execute_plan
-        from apps.core import config
 
-        mode, task = parse_mode(params["task"])
-
-        if mode == "plan":
-            if not task:
-                print(
-                    "Task is empty. Type a task, optionally prefixed with /plan or /act."
-                )
-                return self.COMMAND_CHECKED
-            plan = _stream_product_plan(task)
-            if plan is not None:
-                self._last_product_plan = plan
-                print("\nHint: run '-mp' again and type '/act' to execute this plan.")
-            return self.COMMAND_CHECKED
-
-        # ---- /act mode ----
-        if (
-            str(config.get("AI_ALLOW_ACT", "0")).strip().lower()
-            not in ("1", "true", "yes")
-        ):
-            print("act mode is disabled; set AI_ALLOW_ACT=1 in .env")
-            return self.COMMAND_CHECKED
-
-        if task:
-            plan = _stream_product_plan(task)
-            if plan is None:
-                return self.COMMAND_CHECKED
-        elif self._last_product_plan is not None:
-            plan = self._last_product_plan
-        else:
-            print("No plan yet. Run '-mp' with /plan <task> or /act <task> first.")
-            return self.COMMAND_CHECKED
-
-        plan = assert_plan_sql(plan, mode="act")
-        print(format_plan(plan))
-        if not inputModel.user_confirm():
-            print("Cancelled.")
-            return self.COMMAND_CHECKED
-
-        executed = execute_plan(plan, dry_run=bool(params["dry_run"]))
-        print(format_plan(plan, executed))
-        return self.COMMAND_CHECKED
+    @command_check(["mg", "general"])
+    def general_manager(self, **params):
+        from apps.core.services.AI.Agents.manager_general import GeneralManagerAgent
+        return _interactive_repl(
+            self,
+            GeneralManagerAgent(),
+            prompt="mg> ",
+            title="general",
+        )

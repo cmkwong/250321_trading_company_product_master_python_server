@@ -34,13 +34,26 @@ HEARTBEAT_SECONDS = 5.0
 # Statements a worker may never emit.  SELECT is always allowed; INSERT is
 # allowed only into a caller-supplied allowlist of tables.
 FORBIDDEN_SQL_VERBS = (
-    "UPDATE", "DELETE", "DROP", "TRUNCATE", "ALTER", "CREATE",
-    "GRANT", "REVOKE", "RENAME", "REPLACE",
+    "UPDATE",
+    "DELETE",
+    "DROP",
+    "TRUNCATE",
+    "ALTER",
+    "CREATE",
+    "GRANT",
+    "REVOKE",
+    "RENAME",
+    "REPLACE",
 )
 
 
-def build_llm(model: Optional[str] = None, *, temperature: float = 0.0,
-              num_ctx: Optional[int] = None, vision: bool = False) -> ChatOllama:
+def build_llm(
+    model: Optional[str] = None,
+    *,
+    temperature: float = 0.0,
+    num_ctx: Optional[int] = None,
+    vision: bool = False,
+) -> ChatOllama:
     """Build a local Ollama chat model (vision model when ``vision=True``)."""
     name = model or (VISION_MODEL if vision else DEFAULT_MODEL)
     return ChatOllama(
@@ -85,11 +98,13 @@ def as_sql_list(value: Any) -> List[Dict[str, str]]:
         if isinstance(item, str):
             steps.append({"purpose": "", "statement": item, "verification": ""})
         elif isinstance(item, dict):
-            steps.append({
-                "purpose": str(item.get("purpose", "")),
-                "statement": str(item.get("statement", "")),
-                "verification": str(item.get("verification", "")),
-            })
+            steps.append(
+                {
+                    "purpose": str(item.get("purpose", "")),
+                    "statement": str(item.get("statement", "")),
+                    "verification": str(item.get("verification", "")),
+                }
+            )
     return steps
 
 
@@ -152,8 +167,13 @@ def assert_draft_sql(steps: Any, allowed_tables: Iterable[str]) -> Any:
 # --------------------------------------------------------------------------- #
 # Shared streaming loop
 # --------------------------------------------------------------------------- #
-def stream_agent(agent: Any, inp: Dict[str, Any], *, recursion_limit: int = 25,
-                 heartbeat_seconds: Optional[float] = None):
+def stream_agent(
+    agent: Any,
+    inp: Dict[str, Any],
+    *,
+    recursion_limit: int = 25,
+    heartbeat_seconds: Optional[float] = None,
+):
     """Consume an agent graph on a background thread, yielding event dicts.
 
     Yields ``{"type": "status"|"token", ...}``, then a terminal
@@ -213,4 +233,3 @@ def stream_agent(agent: Any, inp: Dict[str, Any], *, recursion_limit: int = 25,
                 yield {"type": "token", "text": text}
         else:  # "values": full state snapshot
             last_state = data
-

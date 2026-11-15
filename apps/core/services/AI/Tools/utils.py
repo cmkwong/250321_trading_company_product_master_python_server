@@ -17,7 +17,7 @@ import json
 import re
 import socket
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 from urllib.parse import urlparse
 
 import requests
@@ -46,39 +46,16 @@ MAX_FILE_CHARS = int(config.get("AI_MAX_FILE_CHARS", "20000"))
 ACT_MAX_STATEMENTS = int(config.get("AI_ACT_MAX_STATEMENTS", "25"))
 WEB_FETCH_MAX_CHARS = int(config.get("AI_WEB_FETCH_MAX_CHARS", "8000"))
 
-ALLOWED_READ_TABLES = (
-    "master_categories",
-    "master_product_attributes",
-    "master_product_attribute_dropdown",
-    "master_product_category_attribute_assign",
-    "master_product_name_types",
-    "master_currencies",
-)
+# The read/write allowlists now live in Agents/settings.py (single source of
+# truth).  Access them through ``ai_settings()`` so the tools never import the
+# Agents package at module level (Agents -> manager -> Tools -> Agents cycle).
 
-# Tables a generated SELECT may reference. Override with AI_QUERY_TABLES (.env).
-QUERY_ALLOWED_TABLES = tuple(
-    t.strip()
-    for t in str(config.get("AI_QUERY_TABLES", ",".join(ALLOWED_READ_TABLES))).split(
-        ","
-    )
-    if t.strip()
-)
 
-DEFAULT_WRITE_TABLES = (
-    "master_categories",
-    "master_product_attributes",
-    "master_product_attribute_dropdown",
-    "master_product_category_attribute_assign",
-)
+def ai_settings():
+    """Return the ``Agents.settings`` module (imported lazily)."""
+    from apps.core.services.AI.Agents import settings
 
-# Tables an INSERT/UPDATE/DELETE may target. Override with AI_WRITE_TABLES (.env).
-WRITE_ALLOWED_TABLES = tuple(
-    t.strip()
-    for t in str(config.get("AI_WRITE_TABLES", ",".join(DEFAULT_WRITE_TABLES))).split(
-        ","
-    )
-    if t.strip()
-)
+    return settings
 
 # Guarded master endpoints (see routes/general/index.js).
 SELECT_QUERY_PATH = "/general/trade-business/query/select"
@@ -290,15 +267,16 @@ def _tool_error(exc: BaseException) -> str:
 
 def _check_table(table_name: str) -> str:
     table_name = (table_name or "").strip()
+    allowed = ai_settings().ALLOWED_READ_TABLES
     if not IDENTIFIER_RE.match(table_name):
         raise MasterApiError(
             f"Invalid table name: {table_name!r}",
-            hint=f"Allowed tables: {', '.join(ALLOWED_READ_TABLES)}",
+            hint=f"Allowed tables: {', '.join(allowed)}",
         )
-    if table_name not in ALLOWED_READ_TABLES:
+    if table_name not in allowed:
         raise MasterApiError(
             f"Table not allowed for reading: {table_name}",
-            hint=f"Allowed tables: {', '.join(ALLOWED_READ_TABLES)}",
+            hint=f"Allowed tables: {', '.join(allowed)}",
         )
     return table_name
 
@@ -439,15 +417,16 @@ def assert_select_only(query: str) -> str:
 
 def _assert_write_target(normalized: str) -> str:
     target = write_target(normalized)
+    allowed = ai_settings().WRITE_ALLOWED_TABLES
     if target is None:
         raise MasterApiError(
             "Could not determine the target table.",
             hint="Start with INSERT INTO / UPDATE / DELETE FROM <table>.",
         )
-    if target not in WRITE_ALLOWED_TABLES:
+    if target not in allowed:
         raise MasterApiError(
             f"Table not allowed for writing: {target}",
-            hint=f"Allowed tables: {', '.join(WRITE_ALLOWED_TABLES)}",
+            hint=f"Allowed tables: {', '.join(allowed)}",
         )
     return target
 
@@ -481,11 +460,12 @@ def assert_delete_only(query: str) -> str:
 
 def _assert_allowed_tables(masked: str) -> None:
     """Every FROM/JOIN identifier must be in QUERY_ALLOWED_TABLES."""
+    allowed = ai_settings().QUERY_ALLOWED_TABLES
     for table in _TABLE_RE.findall(masked):
-        if table not in QUERY_ALLOWED_TABLES:
+        if table not in allowed:
             raise MasterApiError(
                 f"Table not allowed for querying: {table}",
-                hint=f"Allowed tables: {', '.join(QUERY_ALLOWED_TABLES)}",
+                hint=f"Allowed tables: {', '.join(allowed)}",
             )
 
 
@@ -541,6 +521,133 @@ def _extract_fields_from_js(content: str, table_name: str) -> Optional[Dict[str,
             if len(kv) == 2:
                 current[kv[0].strip()] = kv[1].strip().strip("'")
     return fields or None
+
+
+# ---- Schema catalog (all tables in every table_schema/*.js) -----------------
+
+
+_SCHEMA_CATALOG_CACHE: Optional[Dict[str, Dict[str, Any]]] = None
+
+
+def _brace_body(text: str, open_idx: int):
+    """Return the contents of the ``{...}`` opened at ``open_idx`` and the index
+    just past its closing brace (or ``("", -1)`` when unmatched)."""
+    depth = 0
+    i = open_idx
+    while i < len(text):
+        char = text[i]
+        if char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                return text[open_idx + 1 : i], i + 1
+        i += 1
+    return "", -1
+
+
+def _parse_field_body(body: str) -> Dict[str, Any]:
+    """Extract type / nullability / PK / FK from one ``field: { ... }`` body."""
+    field: Dict[str, Any] = {}
+    match = re.search(r"\btype\s*:\s*'([^']*)'", body)
+    field["type"] = match.group(1) if match else ""
+    match = re.search(r"\bprimaryKey\s*:\s*(true|false)", body)
+    field["primaryKey"] = bool(match and match.group(1) == "true")
+    match = re.search(r"\bnotNull\s*:\s*(true|false)", body)
+    field["notNull"] = bool(match and match.group(1) == "true")
+    ref_m = re.search(r"\breferences\s*:\s*\{", body)
+    if ref_m:
+        ref_body, _ = _brace_body(body, ref_m.end() - 1)
+        if ref_body:
+            table_m = re.search(r"\btable\s*:\s*'([^']*)'", ref_body)
+            field_m = re.search(r"\bfield\s*:\s*'([^']*)'", ref_body)
+            if table_m:
+                field["references"] = {
+                    "table": table_m.group(1),
+                    "field": field_m.group(1) if field_m else "id",
+                }
+    return field
+
+
+def _parse_fields(block: str) -> Dict[str, Any]:
+    """Parse a ``fields: { ... }`` body into ``{name: {type, ...}}`` (brace-aware)."""
+    fields: Dict[str, Any] = {}
+    name_re = re.compile(r"([A-Za-z_][A-Za-z0-9_]*)\s*:\s*\{")
+    pos = 0
+    while True:
+        match = name_re.search(block, pos)
+        if not match:
+            break
+        name = match.group(1)
+        body, end = _brace_body(block, match.end() - 1)
+        pos = match.end() if end == -1 else end
+        if name in ("references", "constraints", "default") or end == -1:
+            continue
+        fields[name] = _parse_field_body(body)
+    return fields
+
+
+def load_schema_catalog(reload: bool = False) -> Dict[str, Dict[str, Any]]:
+    """Parse every ``table_schema/*.js`` into ``{table: {field: {...}}}``.
+
+    Brace-aware (independent of indentation), follows ``references: {table,
+    field}`` foreign keys and never leaks ``references``/``constraints`` as
+    columns.  Cached in-process; pass ``reload=True`` after editing a schema
+    file.
+    """
+    global _SCHEMA_CATALOG_CACHE
+    if _SCHEMA_CATALOG_CACHE is not None and not reload:
+        return _SCHEMA_CATALOG_CACHE
+
+    catalog: Dict[str, Dict[str, Any]] = {}
+    if SCHEMA_DIR.is_dir():
+        name_re = re.compile(r"name:\s*'([a-z0-9_]+)'")
+        for path in sorted(SCHEMA_DIR.glob("*.js")):
+            try:
+                content = path.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+            for match in name_re.finditer(content):
+                table = match.group(1)
+                fields_idx = content.find("fields: {", match.end())
+                if fields_idx == -1:
+                    continue
+                block, _ = _brace_body(content, content.index("{", fields_idx))
+                if block:
+                    catalog[table] = _parse_fields(block)
+    _SCHEMA_CATALOG_CACHE = catalog
+    return catalog
+
+
+def schema_table_names() -> List[str]:
+    """Return every table name found in the schema files, sorted."""
+    return sorted(load_schema_catalog().keys())
+
+
+def render_schema_catalog(tables: Iterable[str], *, include_descriptions: bool = False) -> str:
+    """Render compact ``- table(col TYPE [PK] [-> fk.table.fk])`` lines."""
+    catalog = load_schema_catalog()
+    lines: List[str] = []
+    for name in tables:
+        fields = catalog.get(name)
+        if not fields:
+            lines.append(f"- {name}: (not found in schema)")
+            continue
+        parts = []
+        for field_name, field in fields.items():
+            token = field_name
+            if field.get("type"):
+                token += " " + str(field["type"])
+            if field.get("primaryKey"):
+                token += " PK"
+            if field.get("notNull"):
+                token += " NOT NULL"
+            ref = field.get("references")
+            if ref:
+                token += f" -> {ref['table']}.{ref['field']}"
+            parts.append(token)
+        lines.append(f"- {name}(" + ", ".join(parts) + ")")
+    return "\n".join(lines)
 
 
 # ---- Web fetch helpers (SSRF-guarded) --------------------------------------
