@@ -619,6 +619,24 @@ class ManagerDelegationTests(TestCase):
              "define_product_price", "manage_product_attributes"} <= names
         )
 
+    def test_manager_does_not_expose_attribute_builders(self):
+        from apps.core.services.AI.Agents.domains.product import manager as m
+        from apps.core.services.AI.Agents.domains.product.workers.attributes import (
+            ATTRIBUTE_TOOLS,
+        )
+
+        attribute_builders = {
+            "build_category_attribute_assign_sql",
+            "build_create_attribute_sql",
+            "build_attribute_dropdown_sql",
+        }
+        manager_names = {t.name for t in m.WORKER_TOOLS}
+        worker_names = {t.name for t in ATTRIBUTE_TOOLS}
+
+        self.assertFalse(attribute_builders & manager_names)
+        self.assertIn("manage_product_attributes", manager_names)
+        self.assertTrue(attribute_builders <= worker_names)
+
     def test_human_message_includes_images(self):
         from apps.core.services.AI.Agents.domains.product import manager as m
 
