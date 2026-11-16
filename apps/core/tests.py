@@ -461,35 +461,6 @@ class WorkerSqlGuardrailTests(TestCase):
         self.assertTrue(any("INSERT outside" in r for r in risks))
 
 
-class ProductPriceWorkerTests(TestCase):
-    def test_prices_match_price_controller_formula(self):
-        from apps.core.services.AI.Agents.domains.product.workers.price import ProductPriceWorker
-        from codes.datas import Exchange
-
-        result = ProductPriceWorker().define_price(
-            cost=50.0, qty_tiers="10,100", profit_max=60.0, profit_min=30.0,
-            currency_id="c-usd", product_id="p1",
-        )
-        self.assertTrue(result["ok"])
-        tiers = {t["min_qty"]: t["sale_price"] for t in result["data"]["tiers"]}
-        rate = Exchange.ToUSD["RMB"]
-        self.assertAlmostEqual(tiers[10], 50 * 1.6 / rate, places=3)
-        self.assertAlmostEqual(tiers[100], 50 * 1.3 / rate, places=3)
-        statements = [s["statement"] for s in result["sql"]]
-        self.assertTrue(all("INSERT INTO product_sale_prices_by_qty" in s for s in statements))
-        self.assertTrue(all("UUID()" in s and "NOT EXISTS" in s for s in statements))
-
-    def test_by_variants_reports_missing_data(self):
-        from apps.core.services.AI.Agents.domains.product.workers.price import ProductPriceWorker
-
-        result = ProductPriceWorker().define_price(
-            cost=50.0, selling_by_mode="by_variants", currency_id="c-usd", product_id="p1"
-        )
-        self.assertTrue(result["ok"])
-        self.assertEqual(result["sql"], [])
-        self.assertTrue(any("by_variants" in m for m in result["missing_data"]))
-
-
 class ProductNameWorkerTests(TestCase):
     def test_to_data_url_reads_local_png(self):
         import os
@@ -508,16 +479,14 @@ class ProductNameWorkerTests(TestCase):
             os.unlink(path)
 
     def test_rename_parses_seo_json_without_network(self):
-        from apps.core.services.AI.Agents.domains.product.workers.name import ProductNameWorker
+        from langchain_core.messages import AIMessage
 
-        class _Resp:
-            def __init__(self, content):
-                self.content = content
+        from apps.core.services.AI.Agents.domains.product.workers.name import ProductNameWorker
 
         class _FakeLLM:
             def invoke(self, messages):
-                return _Resp(
-                    json.dumps({
+                return AIMessage(
+                    content=json.dumps({
                         "source_name_cn": "宠物?��?",
                         "plain_translation": "Pet Playpen",
                         "seo_name": "Foldable Pet Playpen For Dogs And Cats",
@@ -616,7 +585,7 @@ class ManagerDelegationTests(TestCase):
         names = {t.name for t in m.WORKER_TOOLS}
         self.assertTrue(
             {"rename_product_with_seo", "research_product_web",
-             "define_product_price", "manage_product_attributes"} <= names
+             "manage_product_attributes"} <= names
         )
 
     def test_manager_does_not_expose_attribute_builders(self):
@@ -654,15 +623,112 @@ class ManagerDelegationTests(TestCase):
         result = {
             "messages": [
                 _ToolMsg(json.dumps({
-                    "worker": "product_price", "ok": True,
+                    "worker": "product_sql_builder", "ok": True,
                     "sql": [{"purpose": "p", "statement": "INSERT INTO product_sale_prices_by_qty ...;"}],
                 }))
             ]
         }
         worker_results, drafts = m.ProductMasterAgent._collect_worker_results(result)
         self.assertEqual(len(worker_results), 1)
-        self.assertEqual(drafts[0]["worker"], "product_price")
+        self.assertEqual(drafts[0]["worker"], "product_sql_builder")
         self.assertIn("product_sale_prices_by_qty", drafts[0]["statement"])
+
+
+class DomainManagerGraphTests(TestCase):
+    """Offline tests for the explicit LangGraph tool-calling loop (no LLM/network)."""
+
+    def test_graph_has_model_and_tools_nodes(self):
+        from apps.core.services.AI.Agents.domains.product import manager as m
+
+        agent = m.ProductMasterAgent()
+        graph = agent._get_agent()
+        nodes = set(graph.get_graph().nodes.keys())
+        self.assertIn("model", nodes)
+        self.assertIn("tools", nodes)
+
+    def test_system_prompt_prepended_not_stored(self):
+        from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+
+        from apps.core.services.AI.Agents.domains.product import manager as m
+        from apps.core.services.AI.Agents.domains.product.prompts import SYSTEM_PROMPT
+
+        captured = []
+
+        class _Bound:
+            def invoke(self, messages):
+                captured.append(list(messages))
+                return AIMessage(content='{"summary": "ok"}')
+
+        class _FakeLLM:
+            def bind_tools(self, tools):
+                return _Bound()
+
+        agent = m.ProductMasterAgent()
+        agent.llm = _FakeLLM()
+        agent._agent = None
+        graph = agent._get_agent()
+
+        state = graph.invoke({"messages": [HumanMessage(content="hi")]})
+
+        self.assertTrue(captured)
+        self.assertIsInstance(captured[0][0], SystemMessage)
+        self.assertIn(SYSTEM_PROMPT, captured[0][0].content)
+        # The system prompt is injected per call, never written into state.
+        self.assertFalse(
+            any(isinstance(msg, SystemMessage) for msg in state["messages"])
+        )
+
+    def test_tool_call_loops_through_tool_node(self):
+        from langchain_core.messages import AIMessage, HumanMessage
+        from langchain_core.tools import tool
+
+        from apps.core.services.AI.Agents.core.graph import build_tool_graph
+
+        calls = []
+
+        @tool
+        def echo(text: str) -> str:
+            """Echo the given text."""
+            calls.append(text)
+            return text
+
+        class _Bound:
+            def __init__(self):
+                self.step = 0
+
+            def invoke(self, messages):
+                self.step += 1
+                if self.step == 1:
+                    return AIMessage(
+                        content="",
+                        tool_calls=[
+                            {"name": "echo", "args": {"text": "ping"}, "id": "1"}
+                        ],
+                    )
+                return AIMessage(content='{"summary": "done"}')
+
+        class _FakeLLM:
+            def bind_tools(self, tools):
+                return _Bound()
+
+        graph = build_tool_graph(_FakeLLM(), [echo])
+
+        state = graph.invoke({"messages": [HumanMessage(content="hi")]})
+        types = [type(m).__name__ for m in state["messages"]]
+
+        self.assertEqual(calls, ["ping"])
+        self.assertEqual(
+            types, ["HumanMessage", "AIMessage", "ToolMessage", "AIMessage"]
+        )
+
+    def test_mode_switch_rebuilds_graph(self):
+        from apps.core.services.AI.Agents.domains.product import manager as m
+
+        agent = m.ProductMasterAgent(mode="plan")
+        first = agent._get_agent()
+        agent.mode = "act"
+        second = agent._get_agent()
+        self.assertIsNot(first, second)
 
 
 class NodeServiceAccountTests(TestCase):
@@ -1342,10 +1408,173 @@ class SqlBuilderWorkerTests(TestCase):
         names = {t.name for t in m._MANAGER_WORKER_TOOLS}
         self.assertIn("build_product_sql", names)
 
-    def test_worker_registry_contains_sql_builder(self):
-        from apps.core.services.AI.Agents import WORKERS
 
-        self.assertIn("product_sql_builder", WORKERS)
+class WorkerGraphTests(TestCase):
+    """Offline tests for the workers' explicit LangGraph loop (no LLM/network)."""
+
+    def test_attributes_worker_graph_has_model_and_tools_nodes(self):
+        from apps.core.services.AI.Agents.domains.product.workers.attributes import (
+            ProductAttributesWorker,
+        )
+
+        graph = ProductAttributesWorker()._get_agent()
+        nodes = set(graph.get_graph().nodes.keys())
+        self.assertIn("model", nodes)
+        self.assertIn("tools", nodes)
+
+    def test_sql_builder_worker_graph_has_model_and_tools_nodes(self):
+        from apps.core.services.AI.Agents.domains.product.workers.sql_builder import (
+            ProductSqlBuilderWorker,
+        )
+
+        graph = ProductSqlBuilderWorker()._get_agent()
+        nodes = set(graph.get_graph().nodes.keys())
+        self.assertIn("model", nodes)
+        self.assertIn("tools", nodes)
+
+    def test_attributes_worker_injects_system_prompt(self):
+        from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+
+        from apps.core.services.AI.Agents.domains.product.workers.attributes import (
+            ATTRIBUTE_SYSTEM_PROMPT,
+            ProductAttributesWorker,
+        )
+
+        captured = []
+
+        class _Bound:
+            def invoke(self, messages):
+                captured.append(list(messages))
+                return AIMessage(content='{"summary": "ok"}')
+
+        class _FakeLLM:
+            def bind_tools(self, tools):
+                return _Bound()
+
+        worker = ProductAttributesWorker(llm=_FakeLLM())
+        state = worker._get_agent().invoke(
+            {"messages": [HumanMessage(content="create a color attribute")]}
+        )
+
+        self.assertTrue(captured)
+        self.assertIsInstance(captured[0][0], SystemMessage)
+        self.assertIn(ATTRIBUTE_SYSTEM_PROMPT, captured[0][0].content)
+        self.assertFalse(
+            any(isinstance(m, SystemMessage) for m in state["messages"])
+        )
+
+    def test_sql_builder_worker_injects_system_prompt(self):
+        from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+
+        from apps.core.services.AI.Agents.domains.product.workers.sql_builder import (
+            ProductSqlBuilderWorker,
+            _system_prompt,
+        )
+
+        captured = []
+
+        class _Bound:
+            def invoke(self, messages):
+                captured.append(list(messages))
+                return AIMessage(content='{"summary": "ok"}')
+
+        class _FakeLLM:
+            def bind_tools(self, tools):
+                return _Bound()
+
+        worker = ProductSqlBuilderWorker(llm=_FakeLLM())
+        state = worker._get_agent().invoke(
+            {"messages": [HumanMessage(content="how many categories?")]}
+        )
+
+        self.assertTrue(captured)
+        self.assertIsInstance(captured[0][0], SystemMessage)
+        # The formatted prompt embeds the executable-table index and core schemas.
+        self.assertIn(_system_prompt(), captured[0][0].content)
+        self.assertFalse(
+            any(isinstance(m, SystemMessage) for m in state["messages"])
+        )
+
+    def test_sql_builder_worker_parses_tool_messages(self):
+        # The graph's ToolNode writes type="tool" messages; _parse_result's
+        # query collection must keep reading them after the create_agent swap.
+        from apps.core.services.AI.Agents.domains.product.workers.sql_builder import (
+            ProductSqlBuilderWorker,
+        )
+
+        worker = ProductSqlBuilderWorker.__new__(ProductSqlBuilderWorker)
+
+        class _Tool:
+            type = "tool"
+
+            def __init__(self, content):
+                self.content = content
+
+        class _Ai:
+            type = "ai"
+
+            def __init__(self, content):
+                self.content = content
+
+        query_json = json.dumps(
+            {"ok": True, "query": "SELECT 1", "rowCount": 1, "rows": [{"1": 1}]}
+        )
+        result = worker._parse_result(
+            {
+                "messages": [
+                    _Ai(json.dumps({"summary": "s", "sql": [], "tables_used": []})),
+                    _Tool(query_json),
+                ]
+            }
+        )
+        self.assertTrue(result["executed"])
+        self.assertEqual(len(result["queries"]), 1)
+
+
+
+
+    def test_name_worker_graph_has_single_model_node(self):
+        from apps.core.services.AI.Agents.domains.product.workers.name import (
+            ProductNameWorker,
+        )
+
+        class _NoopLLM:
+            pass
+
+        graph = ProductNameWorker(llm=_NoopLLM())._get_agent()
+        nodes = set(graph.get_graph().nodes.keys())
+        self.assertEqual(nodes, {"__start__", "model", "__end__"})
+        self.assertNotIn("tools", nodes)
+        self.assertEqual(len(graph.get_graph().edges), 2)
+
+    def test_name_worker_injects_system_prompt(self):
+        from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+
+        from apps.core.services.AI.Agents.domains.product.workers.name import (
+            NAME_SYSTEM_PROMPT,
+            ProductNameWorker,
+        )
+
+        captured = []
+
+        class _FakeLLM:
+            def invoke(self, messages):
+                captured.append(list(messages))
+                return AIMessage(content='{"seo_name": "Dog Bed"}')
+
+        worker = ProductNameWorker(llm=_FakeLLM())
+        state = worker._get_agent().invoke(
+            {"messages": [HumanMessage(content="宠物窝")]}
+        )
+
+        self.assertTrue(captured)
+        self.assertIsInstance(captured[0][0], SystemMessage)
+        self.assertEqual(captured[0][0].content, NAME_SYSTEM_PROMPT)
+        self.assertFalse(
+            any(isinstance(m, SystemMessage) for m in state["messages"])
+        )
+
+
 
 class ManagerGeneralTests(TestCase):
     """Conversation memory, compaction and slash-command parsing."""
@@ -1602,7 +1831,7 @@ class WorkerResultContractTests(TestCase):
         from apps.core.services.AI.Agents.core.contracts import WorkerResult
 
         payload = {
-            "worker": "product_price",
+            "worker": "product_sql_builder",
             "ok": True,
             "summary": "s",
             "data": {"tiers": [{"min_qty": 10, "sale_price": 1.0}]},
@@ -1612,7 +1841,7 @@ class WorkerResultContractTests(TestCase):
         }
         parsed = WorkerResult.from_tool_content(payload)
         self.assertIsNotNone(parsed)
-        self.assertEqual(parsed.worker, "product_price")
+        self.assertEqual(parsed.worker, "product_sql_builder")
         self.assertEqual(parsed.data["tiers"][0]["min_qty"], 10)
 
     def test_failure_envelope_without_worker_is_surfaced(self):

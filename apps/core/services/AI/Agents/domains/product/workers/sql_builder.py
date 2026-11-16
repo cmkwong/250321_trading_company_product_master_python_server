@@ -16,9 +16,9 @@ from __future__ import annotations
 import json
 from typing import Any, Dict, List, Optional, Union
 
-from langchain.agents import create_agent
 from langchain_core.tools import tool
 
+from apps.core.services.AI.Agents.core.graph import build_tool_graph
 from apps.core.services.AI.Agents.core.guardrail import assert_draft_sql
 from apps.core.services.AI.Agents.core.llm import DEFAULT_MODEL, build_llm
 from apps.core.services.AI.Agents.core.streaming import stream_agent
@@ -197,7 +197,8 @@ def _tables_in_sql(statement: str) -> List[str]:
 
 
 class ProductSqlBuilderWorker:
-    """Tool-calling agent that builds and (optionally) runs a read-only SELECT."""
+    """Tool-calling agent (``model`` -> ``tools`` -> ``model``) that builds and
+    (optionally) runs a read-only SELECT, via :func:`core.graph.build_tool_graph`."""
 
     def __init__(
         self,
@@ -216,10 +217,8 @@ class ProductSqlBuilderWorker:
 
     def _get_agent(self):
         if self._agent is None:
-            self._agent = create_agent(
-                model=self.llm,
-                tools=SQL_BUILDER_TOOLS,
-                system_prompt=_system_prompt(),
+            self._agent = build_tool_graph(
+                self.llm, SQL_BUILDER_TOOLS, _system_prompt()
             )
         return self._agent
 

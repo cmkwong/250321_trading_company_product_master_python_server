@@ -102,9 +102,6 @@ delegation.
   keywords and draft product_names SQL.
 - `research_product_web(urls, target_fields, question)` -- supplied web links ->
   summarised fields/facts with sources.
-- `define_product_price(cost, qty_tiers, profit_max, profit_min, currency,
-  exchange_rate, selling_by_mode, currency_id, product_id, research_summary)` --
-  landed cost + targets -> tier prices and draft price SQL.
 - `manage_product_attributes(task)` -- create/assign categories, attributes and
   dropdown values (the attribute/category specialist).
 - `build_product_sql(question, tables, execute)` -- turn a question that needs a
@@ -117,15 +114,13 @@ Routing hints:
 - 1688 or other product links, competitor pages, specs from the web ->
   web_research worker; use `fetch_web_content` / `search_web` directly only for
   quick lookups where a full research envelope adds nothing.
-- Cost, margin, qty tiers, currency conversion -> product_price worker; pass the
-  research summary when one is available.
 - Category / attribute / dropdown create or assign -> product_attributes worker
   (`manage_product_attributes` is the ONLY route; do not draft that SQL yourself).
 - Multi-table data questions, joins, counts, comparisons -> product_sql_builder
   worker (quote its `answer` only when it reports `executed: true`); otherwise run
   the drafted SELECT yourself with `execute_select_query`.
 - A request can need several workers; call them in data-flow order (research ->
-  naming/price -> attributes) and combine the results.
+  naming -> attributes) and combine the results.
 
 Worker envelopes are captured automatically: their SQL is surfaced to the user
 as drafts and is never executed. Summarise the key findings in `answer`/`plan`;
@@ -174,5 +169,3 @@ Return exactly ONE JSON object (no prose outside it) with:
 - missing_data: anything that failed, was skipped or needs human input.
 - risks: warnings or assumptions.
 """
-
-__all__ = ["SYSTEM_PROMPT", "WORKER_ROUTING_PROMPT", "ACT_SYSTEM_PROMPT"]

@@ -28,11 +28,3 @@ class SalesManagerAgent(DomainManagerAgent):
     PLAN_PROMPT = SALES_SYSTEM_PROMPT
     ACT_PROMPT = SALES_ACT_SYSTEM_PROMPT
 
-
-__all__ = [
-    "SALES_SYSTEM_PROMPT",
-    "SALES_ACT_SYSTEM_PROMPT",
-    "SALES_TOOLS",
-    "build_sales_sql",
-    "SalesManagerAgent",
-]

@@ -323,7 +323,7 @@ def assert_plan_sql(
     """Enforce the guardrail on a plan's ``sql`` (allowlist) and ``drafts``.
 
     ``drafts`` are worker proposals and are checked with an advisory table policy
-    (a price worker may legitimately draft ``product_sale_prices_by_qty``, which
+    (a worker may legitimately draft ``product_sale_prices_by_qty``, which
     is not a write-allowed table).  ``sql`` is what ``/act`` executes, so it is
     checked against ``WRITE_ALLOWED_TABLES`` and, in act mode, capped with LIMIT.
     """
@@ -386,17 +386,3 @@ def assert_draft_sql(steps: Any, allowed_tables: Iterable[str]) -> Any:
             )
     return filtered, final_risks
 
-
-__all__ = [
-    "GuardDecision",
-    "FORBIDDEN_SQL_VERBS",
-    "first_verb",
-    "verb_of",
-    "write_target",
-    "validate_statement",
-    "as_sql_list",
-    "filter_sql",
-    "assert_plan_sql",
-    "assert_plan_read_only",
-    "assert_draft_sql",
-]

@@ -20,9 +20,8 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional, TypedDict
 
-from langchain.agents import create_agent
-
 from . import guardrail as _guardrail
+from .graph import build_tool_graph
 from .guardrail import (
     assert_plan_read_only,
     assert_plan_sql,
@@ -195,8 +194,9 @@ class DomainManagerAgent(ConversationMemory):
     """Shared turn engine for a single-domain manager (product / sales).
 
     Subclasses supply ``PLAN_TOOLS``, ``ACT_TOOLS``, ``PLAN_PROMPT`` and
-    ``ACT_PROMPT``.  The agent graph is a LangChain tool-calling agent backed by
-    the local Ollama model.
+    ``ACT_PROMPT``.  The agent graph is an explicit LangGraph tool-calling loop
+    (``model`` -> ``tools`` -> ``model``, see :func:`core.graph.build_tool_graph`)
+    backed by the local Ollama model.
     """
 
     PLAN_TOOLS = ()
@@ -222,18 +222,16 @@ class DomainManagerAgent(ConversationMemory):
             num_ctx=NUM_CTX,
         )
         self._agent = None
+        self._agent_mode: Optional[str] = None
 
     def _get_agent(self):
-        if self._agent is None:
+        if self._agent is None or self._agent_mode != self.mode:
             if self.mode == "act":
                 tools, prompt = self.ACT_TOOLS, self.ACT_PROMPT
             else:
                 tools, prompt = self.PLAN_TOOLS, self.PLAN_PROMPT
-            self._agent = create_agent(
-                model=self.llm,
-                tools=tools,
-                system_prompt=prompt,
-            )
+            self._agent = build_tool_graph(self.llm, tools, prompt)
+            self._agent_mode = self.mode
         return self._agent
 
     def _build_human_message(
@@ -497,15 +495,3 @@ class DomainManagerAgent(ConversationMemory):
         plan = self._parse_result(self._turn_messages(last_state, len(prior)))
         yield {"type": "plan", "plan": plan, "text": format_plan(plan)}
 
-
-__all__ = [
-    "SqlStep",
-    "ProductPlan",
-    "DEFAULT_MODEL",
-    "NUM_CTX",
-    "HEARTBEAT_SECONDS",
-    "assert_plan_sql",
-    "assert_plan_read_only",
-    "format_plan",
-    "DomainManagerAgent",
-]

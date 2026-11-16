@@ -11,7 +11,6 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
-from langchain.agents import create_agent
 from langchain_core.tools import tool
 
 from apps.core.services.AI.Agents.core.contracts import (
@@ -20,6 +19,7 @@ from apps.core.services.AI.Agents.core.contracts import (
     dump_worker_result,
     extract_json_block,
 )
+from apps.core.services.AI.Agents.core.graph import build_tool_graph
 from apps.core.services.AI.Agents.core.guardrail import assert_draft_sql
 from apps.core.services.AI.Agents.core.llm import DEFAULT_MODEL, build_llm
 from apps.core.services.AI.Agents.core.streaming import stream_agent
@@ -114,7 +114,8 @@ def _format_attributes(result: Dict[str, Any]) -> str:
 
 
 class ProductAttributesWorker:
-    """Tool-calling agent for attribute create/assign work."""
+    """Tool-calling agent (``model`` -> ``tools`` -> ``model``) for attribute
+    create/assign work, built via :func:`core.graph.build_tool_graph`."""
 
     def __init__(
         self,
@@ -131,10 +132,8 @@ class ProductAttributesWorker:
 
     def _get_agent(self):
         if self._agent is None:
-            self._agent = create_agent(
-                model=self.llm,
-                tools=ATTRIBUTE_TOOLS,
-                system_prompt=ATTRIBUTE_SYSTEM_PROMPT,
+            self._agent = build_tool_graph(
+                self.llm, ATTRIBUTE_TOOLS, ATTRIBUTE_SYSTEM_PROMPT
             )
         return self._agent
 

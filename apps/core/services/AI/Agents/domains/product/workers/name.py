@@ -16,7 +16,7 @@ import os
 from typing import Any, Dict, List, Optional
 
 import requests
-from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_core.messages import HumanMessage
 from langchain_core.tools import tool
 
 from apps.core import config
@@ -25,6 +25,7 @@ from apps.core.services.AI.Agents.core.contracts import (
     dump_worker_result,
     extract_json_block,
 )
+from apps.core.services.AI.Agents.core.graph import build_tool_graph
 from apps.core.services.AI.Agents.core.llm import VISION_MODEL, build_llm, message_text
 from apps.core.services.AI.Agents.core.contracts import MasterApiError
 from apps.core.services.AI.Agents.core.master_api import _rows
@@ -175,11 +176,23 @@ def _build_product_name_sql(
 
 
 class ProductNameWorker:
-    """Rename a Chinese product name into SEO English using a vision model."""
+    """Rename a Chinese product name into SEO English using a vision model.
+
+    Runs through a single ``model`` node graph (``core.graph.build_tool_graph``
+    with no tools); the system prompt is prepended on each call but never stored
+    in state.
+    """
 
     def __init__(self, model: Optional[str] = None, llm: Any = None):
         self.model = model or VISION_MODEL
         self.llm = llm or build_llm(self.model, vision=True)
+        self._agent = None
+
+    def _get_agent(self):
+        """Compile once: a single ``model`` node (this worker uses no tools)."""
+        if self._agent is None:
+            self._agent = build_tool_graph(self.llm, [], NAME_SYSTEM_PROMPT)
+        return self._agent
 
     def rename(
         self,
@@ -231,13 +244,11 @@ class ProductNameWorker:
         for url in data_urls:
             content.append({"type": "image_url", "image_url": {"url": url}})
 
-        messages = [
-            SystemMessage(content=NAME_SYSTEM_PROMPT),
-            HumanMessage(content=content),
-        ]
-
         try:
-            text = message_text(self.llm.invoke(messages))
+            state = self._get_agent().invoke(
+                {"messages": [HumanMessage(content=content)]}
+            )
+            text = message_text(state["messages"][-1])
         except Exception as exc:  # noqa: BLE001 - surface as an error envelope
             return {
                 "worker": "product_name",

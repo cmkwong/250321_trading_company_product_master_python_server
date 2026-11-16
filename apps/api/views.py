@@ -28,7 +28,6 @@ from apps.core.services.AI.Agents.core import plan_store
 from apps.core.services.AI.Agents.core.act_tools import execute_plan
 from apps.core.services.AI.Agents.domains.product.workers.name import ProductNameWorker
 from apps.core.services.AI.Agents.domains.product.workers.web_research import WebResearchWorker
-from apps.core.services.AI.Agents.domains.product.workers.price import ProductPriceWorker
 from apps.core.services.AI.Agents.domains.product.workers.attributes import ProductAttributesWorker
 from apps.core.services.AI.Agents.domains.product.workers.sql_builder import ProductSqlBuilderWorker
 
@@ -288,28 +287,6 @@ def web_research_worker(request):
         urls=urls,
         target_fields=body.get("target_fields"),
         question=body.get("question"),
-    )
-    return JsonResponse(result)
-
-
-@csrf_exempt
-@require_http_methods(["POST"])
-def product_price_worker(request):
-    """Define a product price and draft SQL from cost + research inputs."""
-    body = _json_body(request)
-    if "cost" not in body:
-        return JsonResponse({"error": "missing 'cost' field"}, status=400)
-    result = ProductPriceWorker().define_price(
-        cost=body.get("cost"),
-        qty_tiers=body.get("qty_tiers", "10,100,500"),
-        profit_max=body.get("profit_max", 60.0),
-        profit_min=body.get("profit_min", 30.0),
-        currency=body.get("currency", "USD"),
-        exchange_rate=body.get("exchange_rate"),
-        selling_by_mode=body.get("selling_by_mode", "by_qty"),
-        currency_id=body.get("currency_id"),
-        product_id=body.get("product_id"),
-        research_summary=body.get("research_summary"),
     )
     return JsonResponse(result)
 

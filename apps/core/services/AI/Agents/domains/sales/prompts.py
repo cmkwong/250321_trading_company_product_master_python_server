@@ -93,5 +93,3 @@ Return exactly ONE JSON object (no prose outside it) with:
 - missing_data: anything that failed, was skipped or needs human input.
 - risks: warnings or assumptions.
 """
-
-__all__ = ["SALES_SYSTEM_PROMPT", "SALES_ACT_SYSTEM_PROMPT"]
