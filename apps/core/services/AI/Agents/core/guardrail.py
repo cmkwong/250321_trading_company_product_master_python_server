@@ -317,6 +317,7 @@ def filter_sql(
     return safe, skipped, risks
 
 
+# Plan-mode guardrails for SQL statements.
 def assert_plan_sql(
     plan: Dict[str, Any], *, mode: str = "plan", allow_delete_all: Optional[bool] = None
 ) -> Dict[str, Any]:
@@ -385,4 +386,3 @@ def assert_draft_sql(steps: Any, allowed_tables: Iterable[str]) -> Any:
                 {k: step.get(k, "") for k in ("purpose", "statement", "verification")}
             )
     return filtered, final_risks
-

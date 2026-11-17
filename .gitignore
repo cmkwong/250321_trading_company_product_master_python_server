@@ -1,6 +1,7 @@
 config.py
 docs
 .env
+logs/
 
 # Python
 __pycache__/

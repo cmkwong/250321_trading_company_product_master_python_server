@@ -274,6 +274,7 @@ class DomainManagerAgent(ConversationMemory):
         return "\n".join(lines)
 
     @staticmethod
+    # Return the row count and rows of the last successful SELECT query executed by the agent.
     def _last_select_rows(result: Dict[str, Any]) -> tuple:
         """Return (rowCount, rows) of the last successful execute_select_query tool message."""
         rows: List[Dict[str, Any]] = []
@@ -299,6 +300,7 @@ class DomainManagerAgent(ConversationMemory):
                 row_count = int(data.get("rowCount", len(rows)))
         return row_count, rows
 
+    # Parse the agent result into a structured ProductPlan.
     def _parse_result(self, result: Dict[str, Any]) -> ProductPlan:
         """Normalise an agent result dict into a guarded ProductPlan."""
         structured = result.get("structured_response")
@@ -494,4 +496,3 @@ class DomainManagerAgent(ConversationMemory):
             self.messages = final_messages
         plan = self._parse_result(self._turn_messages(last_state, len(prior)))
         yield {"type": "plan", "plan": plan, "text": format_plan(plan)}
-

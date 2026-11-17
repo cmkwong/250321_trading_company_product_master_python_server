@@ -17,12 +17,9 @@ from apps.core import commands as registry
 from apps.core import config
 import apps.core.operations  # noqa: F401  (populates the command registry)
 from apps.core.models import PriceQuote
-from apps.core.services.AI.Agents.domains.product.manager import (
-    ProductMasterAgent,
-    assert_plan_sql,
-    format_plan,
-    parse_mode,
-)
+from apps.core.services.AI.Agents.core.engine import assert_plan_sql, format_plan
+from apps.core.services.AI.Agents.core.router import parse_mode
+from apps.core.services.AI.Agents.domains.product.manager import ProductMasterAgent
 from apps.core.services.AI.Agents.core.contracts import canonical_digest
 from apps.core.services.AI.Agents.core import plan_store
 from apps.core.services.AI.Agents.core.act_tools import execute_plan

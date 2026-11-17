@@ -116,7 +116,7 @@ class ProductMasterToolTests(TestCase):
         self.assertIn("category not found", data["error"])
 
     def test_plan_guard_keeps_update_removes_delete_and_ddl(self):
-        from apps.core.services.AI.Agents.domains.product import manager as p
+        from apps.core.services.AI.Agents.core.engine import assert_plan_read_only
 
         plan = {
             "summary": "s",
@@ -142,7 +142,7 @@ class ProductMasterToolTests(TestCase):
             "missing_data": [],
             "risks": [],
         }
-        cleaned = p.assert_plan_read_only(plan)
+        cleaned = assert_plan_read_only(plan)
         statements = [step["statement"] for step in cleaned["sql"]]
         self.assertIn("SELECT 1;", statements)
         # UPDATE is kept for review in plan mode; DELETE and DDL are removed.
@@ -912,22 +912,22 @@ class NodeServiceAccountTests(TestCase):
 
 class ParseModeTests(TestCase):
     def test_parse_mode_defaults_to_plan(self):
-        from apps.core.services.AI.Agents.domains.product.manager import parse_mode
+        from apps.core.services.AI.Agents.core.router import parse_mode
 
         self.assertEqual(parse_mode("add material"), ("plan", "add material"))
 
     def test_parse_mode_act(self):
-        from apps.core.services.AI.Agents.domains.product.manager import parse_mode
+        from apps.core.services.AI.Agents.core.router import parse_mode
 
         self.assertEqual(parse_mode("/act add material"), ("act", "add material"))
 
     def test_parse_mode_plan_explicit(self):
-        from apps.core.services.AI.Agents.domains.product.manager import parse_mode
+        from apps.core.services.AI.Agents.core.router import parse_mode
 
         self.assertEqual(parse_mode("/plan add material"), ("plan", "add material"))
 
     def test_parse_mode_embedded_slash_not_triggered(self):
-        from apps.core.services.AI.Agents.domains.product.manager import parse_mode
+        from apps.core.services.AI.Agents.core.router import parse_mode
 
         self.assertEqual(
             parse_mode("see /act/x for docs"), ("plan", "see /act/x for docs")
@@ -936,7 +936,7 @@ class ParseModeTests(TestCase):
 
 class ActModeTests(TestCase):
     def test_act_guard_keeps_delete_removes_ddl(self):
-        from apps.core.services.AI.Agents.domains.product import manager as p
+        from apps.core.services.AI.Agents.core.engine import assert_plan_sql
 
         plan = {
             "summary": "s",
@@ -948,7 +948,7 @@ class ActModeTests(TestCase):
             "missing_data": [],
             "risks": [],
         }
-        cleaned = p.assert_plan_sql(plan, mode="act")
+        cleaned = assert_plan_sql(plan, mode="act")
         statements = [s["statement"] for s in cleaned["sql"]]
         self.assertTrue(any("DELETE" in s for s in statements))
         self.assertFalse(any("DROP" in s for s in statements))

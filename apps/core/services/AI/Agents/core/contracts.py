@@ -237,4 +237,3 @@ def _tool_error(exc: BaseException) -> str:
         {"ok": False, "error": str(exc), "hint": hint},
         ensure_ascii=False,
     )
-

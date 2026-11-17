@@ -7,10 +7,18 @@ used by :class:`domains.product.manager.ProductMasterAgent`.
 
 from __future__ import annotations
 
-from apps.core.services.AI.Agents.domains.product.workers.name import rename_product_with_seo
-from apps.core.services.AI.Agents.domains.product.workers.web_research import research_product_web
-from apps.core.services.AI.Agents.domains.product.workers.attributes import manage_product_attributes
-from apps.core.services.AI.Agents.domains.product.workers.sql_builder import build_product_sql
+from apps.core.services.AI.Agents.domains.product.workers.name import (
+    rename_product_with_seo,
+)
+from apps.core.services.AI.Agents.domains.product.workers.web_research import (
+    research_product_web,
+)
+from apps.core.services.AI.Agents.domains.product.workers.attributes import (
+    manage_product_attributes,
+)
+from apps.core.services.AI.Agents.domains.product.workers.sql_builder import (
+    build_product_sql,
+)
 from apps.core.services.AI.Agents.core.plan_tools import (
     PLAN_TOOLS,
     build_attribute_dropdown_sql,
