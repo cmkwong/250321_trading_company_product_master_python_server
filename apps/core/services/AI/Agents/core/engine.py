@@ -26,6 +26,7 @@ from .guardrail import (
     assert_plan_read_only,
     assert_plan_sql,
 )  # noqa: F401  (re-exports)
+from . import tracing
 from .llm import DEFAULT_MODEL, NUM_CTX, build_llm
 from .memory import ConversationMemory
 from .streaming import HEARTBEAT_SECONDS, stream_agent
@@ -204,6 +205,9 @@ class DomainManagerAgent(ConversationMemory):
     PLAN_PROMPT = ""
     ACT_PROMPT = ""
 
+    # Tracing label for this domain; subclasses override it ("product"/"sales").
+    DOMAIN = "agent"
+
     def __init__(
         self,
         model: Optional[str] = None,
@@ -212,6 +216,7 @@ class DomainManagerAgent(ConversationMemory):
         mode: str = "plan",
     ) -> None:
         super().__init__()
+        tracing.configure_tracing()
         self.model = model or DEFAULT_MODEL
         self.temperature = temperature
         self.recursion_limit = recursion_limit
@@ -233,6 +238,17 @@ class DomainManagerAgent(ConversationMemory):
             self._agent = build_tool_graph(self.llm, tools, prompt)
             self._agent_mode = self.mode
         return self._agent
+
+    def _run_config(self, action: str) -> Dict[str, Any]:
+        """LangChain config for one turn: recursion limit + tracing identity."""
+        cfg = tracing.run_config(
+            run_name=f"{type(self).__name__}.{action}",
+            domain=self.DOMAIN,
+            mode=self.mode,
+            model=self.model,
+        )
+        cfg["recursion_limit"] = self.recursion_limit
+        return cfg
 
     def _build_human_message(
         self,
@@ -268,8 +284,8 @@ class DomainManagerAgent(ConversationMemory):
         else:
             lines.append(
                 "\nUse the tool or worker that fits the request. Answer informational "
-                "requests from data; draft SQL only for change requests. Do not "
-                "execute anything; write SQL for review."
+                "requests from data; draft SQL only for change requests. You could build "
+                "SQL SELECT statements for review if appropriate."
             )
         return "\n".join(lines)
 
@@ -418,6 +434,7 @@ class DomainManagerAgent(ConversationMemory):
         turn["messages"] = list(result.get("messages", []) or [])[start:]
         return turn
 
+    # Public API for running agent turns: plan and stream.
     def plan(
         self,
         task: str,
@@ -441,7 +458,7 @@ class DomainManagerAgent(ConversationMemory):
                     ("human", self._build_human_message(task, links, images, context)),
                 ]
             },
-            config={"recursion_limit": self.recursion_limit},
+            config=self._run_config("plan"),
         )
         self.messages = list(result.get("messages", []) or [])
         return self._parse_result(self._turn_messages(result, len(prior)))
@@ -480,7 +497,7 @@ class DomainManagerAgent(ConversationMemory):
         for event in stream_agent(
             agent,
             inp,
-            recursion_limit=self.recursion_limit,
+            config=self._run_config("stream"),
             heartbeat_seconds=HEARTBEAT_SECONDS,
         ):
             if event["type"] == "error":

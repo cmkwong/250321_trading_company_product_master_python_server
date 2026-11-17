@@ -23,6 +23,8 @@ from apps.core.services.AI.Agents.domains.sales.tools import (
 class SalesManagerAgent(DomainManagerAgent):
     """Sales-domain manager: sales tools and prompts."""
 
+    DOMAIN = "sales"
+
     PLAN_TOOLS = SALES_TOOLS
     ACT_TOOLS = _ACT_TOOLS
     PLAN_PROMPT = SALES_SYSTEM_PROMPT

@@ -24,6 +24,8 @@ from apps.core.services.AI.Agents.domains.product.tools import (
 class ProductMasterAgent(DomainManagerAgent):
     """Product-domain manager: product-master tools and prompts."""
 
+    DOMAIN = "product"
+
     PLAN_TOOLS = WORKER_TOOLS
     ACT_TOOLS = ACT_TOOLS
     PLAN_PROMPT = SYSTEM_PROMPT + WORKER_ROUTING_PROMPT

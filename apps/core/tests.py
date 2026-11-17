@@ -1,11 +1,17 @@
 """Tests for the core service layer and the HTTP API (vertical slice)."""
 
 import json
+import os
 
 from django.test import TestCase
 from django.urls import reverse
 
 from apps.core.services.price_service import PriceController
+
+# Keep the suite hermetic: never POST traces to LangSmith even when a developer
+# has LANGSMITH_API_KEY in .env.  core.tracing.configure_tracing() never
+# overwrites an existing LANGSMITH_TRACING value, so this wins over .env.
+os.environ["LANGSMITH_TRACING"] = "false"
 
 
 class PriceServiceTests(TestCase):
@@ -1904,5 +1910,159 @@ class ToolSchemaTests(TestCase):
 
         self.assertEqual(seen["tables"], ["sales_quotations", "master_currencies"])
         self.assertFalse(seen["execute"])
+
+
+class TracingConfigTests(TestCase):
+    """Offline tests for LangSmith tracing config (core.tracing)."""
+
+    def setUp(self):
+        from apps.core.services.AI.Agents.core import tracing
+
+        tracing._configured = False
+
+    def _configure(self, env):
+        from unittest.mock import patch
+
+        from apps.core.services.AI.Agents.core import tracing
+
+        with patch.dict("os.environ", env):
+            enabled = tracing.configure_tracing()
+            result = dict(os.environ)
+        return enabled, result
+
+    def test_disabled_without_api_key(self):
+        enabled, env = self._configure(
+            {
+                "LANGSMITH_API_KEY": "",
+                "LANGSMITH_TRACING": "",
+                "LANGSMITH_AGENT_ID": "",
+                "LANGSMITH_AGENT_ENVIRONMENT": "",
+                "LANGSMITH_PROJECT": "",
+            }
+        )
+        self.assertFalse(enabled)
+        self.assertEqual(env["LANGSMITH_TRACING"], "false")
+
+    def test_flag_true_without_key_still_disabled(self):
+        enabled, env = self._configure(
+            {
+                "LANGSMITH_API_KEY": "",
+                "LANGSMITH_TRACING": "true",
+                "LANGSMITH_AGENT_ID": "",
+                "LANGSMITH_AGENT_ENVIRONMENT": "",
+            }
+        )
+        self.assertFalse(enabled)
+        self.assertEqual(env["LANGSMITH_TRACING"], "false")
+
+    def test_enabled_with_api_key_applies_defaults(self):
+        enabled, env = self._configure(
+            {
+                "LANGSMITH_API_KEY": "lsv2_pt_test",
+                "LANGSMITH_TRACING": "",
+                "LANGSMITH_AGENT_ID": "",
+                "LANGSMITH_AGENT_ENVIRONMENT": "",
+                "LANGSMITH_PROJECT": "",
+            }
+        )
+        self.assertTrue(enabled)
+        self.assertEqual(env["LANGSMITH_TRACING"], "true")
+        self.assertEqual(env["LANGSMITH_ENDPOINT"], "https://api.smith.langchain.com")
+        self.assertEqual(env["LANGSMITH_AGENT_ID"], "ollama-agents-qwen3-5")
+        self.assertEqual(env["LANGSMITH_AGENT_ENVIRONMENT"], "local")
+
+    def test_does_not_override_explicit_values(self):
+        enabled, env = self._configure(
+            {
+                "LANGSMITH_API_KEY": "lsv2_pt_test",
+                "LANGSMITH_TRACING": "true",
+                "LANGSMITH_ENDPOINT": "https://custom.example.com",
+                "LANGSMITH_AGENT_ID": "my-agent",
+                "LANGSMITH_AGENT_ENVIRONMENT": "production",
+            }
+        )
+        self.assertTrue(enabled)
+        self.assertEqual(env["LANGSMITH_ENDPOINT"], "https://custom.example.com")
+        self.assertEqual(env["LANGSMITH_AGENT_ID"], "my-agent")
+        self.assertEqual(env["LANGSMITH_AGENT_ENVIRONMENT"], "production")
+
+    def test_project_suppresses_agent_address(self):
+        enabled, env = self._configure(
+            {
+                "LANGSMITH_API_KEY": "lsv2_pt_test",
+                "LANGSMITH_TRACING": "",
+                "LANGSMITH_PROJECT": "my-project",
+                "LANGSMITH_AGENT_ID": "",
+                "LANGSMITH_AGENT_ENVIRONMENT": "",
+            }
+        )
+        self.assertTrue(enabled)
+        self.assertEqual(env["LANGSMITH_AGENT_ID"], "")
+        self.assertEqual(env["LANGSMITH_AGENT_ENVIRONMENT"], "")
+
+    def test_invalid_agent_id_disables_tracing(self):
+        enabled, env = self._configure(
+            {
+                "LANGSMITH_API_KEY": "lsv2_pt_test",
+                "LANGSMITH_TRACING": "",
+                "LANGSMITH_AGENT_ID": "INVALID_ID!",
+                "LANGSMITH_AGENT_ENVIRONMENT": "local",
+            }
+        )
+        self.assertFalse(enabled)
+        self.assertEqual(env["LANGSMITH_TRACING"], "false")
+
+    def test_invalid_environment_disables_tracing(self):
+        enabled, env = self._configure(
+            {
+                "LANGSMITH_API_KEY": "lsv2_pt_test",
+                "LANGSMITH_TRACING": "",
+                "LANGSMITH_AGENT_ID": "ollama-agents-qwen3-5",
+                "LANGSMITH_AGENT_ENVIRONMENT": "qa",
+            }
+        )
+        self.assertFalse(enabled)
+        self.assertEqual(env["LANGSMITH_TRACING"], "false")
+
+    def test_run_config_shape(self):
+        from apps.core.services.AI.Agents.core import tracing
+
+        cfg = tracing.run_config(
+            run_name="ProductMasterAgent.plan",
+            domain="product",
+            mode="plan",
+            model="qwen3.5",
+        )
+        self.assertEqual(cfg["run_name"], "ProductMasterAgent.plan")
+        self.assertIn("langsmith-trace", cfg["tags"])
+        self.assertIn("product", cfg["tags"])
+        self.assertIn("plan", cfg["tags"])
+        self.assertEqual(cfg["metadata"]["domain"], "product")
+        self.assertEqual(cfg["metadata"]["mode"], "plan")
+        self.assertEqual(cfg["metadata"]["model"], "qwen3.5")
+        self.assertIn("agent_id", cfg["metadata"])
+        self.assertIn("agent_environment", cfg["metadata"])
+
+    def test_stream_agent_forwards_config(self):
+        from apps.core.services.AI.Agents.core import streaming
+
+        captured = {}
+
+        class _Agent:
+            def stream(self, inp, config=None, stream_mode=None):
+                captured["config"] = config
+                yield ("values", {"messages": []})
+
+        events = list(
+            streaming.stream_agent(
+                _Agent(),
+                {"messages": []},
+                recursion_limit=7,
+                config={"run_name": "x", "tags": ["t"]},
+            )
+        )
+        self.assertTrue(any(e["type"] == "_done" for e in events))
+        self.assertEqual(captured["config"]["recursion_limit"], 7)
+        self.assertEqual(captured["config"]["run_name"], "x")
 
 

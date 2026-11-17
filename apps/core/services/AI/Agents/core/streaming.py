@@ -31,11 +31,16 @@ def stream_agent(
     *,
     recursion_limit: int = 25,
     heartbeat_seconds: Optional[float] = None,
+    config: Optional[Dict[str, Any]] = None,
 ):
     """Consume an agent graph on a background thread, yielding event dicts.
 
     Yields ``{"type": "status"|"token", ...}``, then a terminal
     ``{"type": "_done", "state": {...}}`` or ``{"type": "error", "error": ...}``.
+
+    ``config`` (a LangChain ``RunnableConfig`` carrying e.g. ``run_name``,
+    ``tags`` and ``metadata`` for tracing) is merged into the config passed to
+    ``agent.stream``; ``recursion_limit`` fills in when ``config`` omits it.
     """
     heartbeat = HEARTBEAT_SECONDS if heartbeat_seconds is None else heartbeat_seconds
     announced = set()
@@ -44,9 +49,10 @@ def stream_agent(
 
     def _produce() -> None:
         try:
+            cfg = {"recursion_limit": recursion_limit, **(config or {})}
             for item in agent.stream(
                 inp,
-                config={"recursion_limit": recursion_limit},
+                config=cfg,
                 stream_mode=["messages", "values"],
             ):
                 q.put(("item", item))
