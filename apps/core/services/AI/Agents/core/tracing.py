@@ -20,9 +20,10 @@ from __future__ import annotations
 import logging
 import os
 import re
-from typing import Any, Dict, List, Optional
+from contextlib import contextmanager
+from typing import Any, Dict, Iterator, List, Optional
 
-from apps.core import config
+from apps.core import config  # noqa: F401  (loads .env before any SDK env read)
 
 logger = logging.getLogger(__name__)
 
@@ -175,3 +176,48 @@ def run_config(
             **(metadata or {}),
         },
     }
+
+
+@contextmanager
+def turn_span(
+    run_name: str,
+    *,
+    inputs: Optional[Dict[str, Any]] = None,
+    tags: Optional[List[str]] = None,
+    metadata: Optional[Dict[str, Any]] = None,
+) -> Iterator[Any]:
+    """Open the root LangSmith run for one agent turn.
+
+    Yields the ``langsmith.RunTree`` (or ``None`` when tracing is disabled or no
+    ``run_name`` is given, so callers need no special-casing).  The caller ends
+    it with :func:`finish_turn` once the rendered plan is available, which is
+    what puts the human-readable summary into the trace's outputs.
+
+    ``langsmith`` is imported lazily so a disabled turn never constructs a
+    client or touches the network.
+    """
+    if not run_name or not is_enabled():
+        yield None
+        return
+
+    from langsmith import trace as ls_trace  # noqa: PLC0415 - lazy
+
+    with ls_trace(
+        run_name,
+        run_type="chain",
+        inputs=inputs or {},
+        tags=list(tags or []),
+        metadata=dict(metadata or {}),
+    ) as run:
+        yield run
+
+
+def finish_turn(
+    run: Any,
+    plan: Optional[Dict[str, Any]],
+    text: str,
+) -> None:
+    """Close a turn run with the structured plan and its rendered summary."""
+    if run is None:
+        return
+    run.end(outputs={"plan": plan or {}, "summary": text})

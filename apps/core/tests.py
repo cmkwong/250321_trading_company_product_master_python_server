@@ -2066,3 +2066,130 @@ class TracingConfigTests(TestCase):
         self.assertEqual(captured["config"]["run_name"], "x")
 
 
+class TracingTurnSpanTests(TestCase):
+    """The turn span records the parsed plan + rendered summary as outputs."""
+
+    @staticmethod
+    def _patch_tracing(runs):
+        from contextlib import contextmanager
+        from unittest.mock import patch
+
+        from apps.core.services.AI.Agents.core import tracing
+
+        class _FakeRun:
+            def __init__(self):
+                self.outputs = None
+                self.ended = False
+
+            def end(self, outputs=None, error=None):
+                self.outputs = outputs
+                self.ended = True
+
+        @contextmanager
+        def fake_trace(name, run_type="chain", inputs=None, tags=None,
+                       metadata=None, **kwargs):
+            run = _FakeRun()
+            runs.append({
+                "name": name, "inputs": inputs, "tags": tags,
+                "metadata": metadata, "run": run,
+            })
+            yield run
+
+        return (
+            patch.object(tracing, "is_enabled", return_value=True),
+            patch("langsmith.trace", fake_trace),
+        )
+
+    def test_plan_turn_span_carries_summary(self):
+        import json
+        from unittest.mock import patch
+
+        from apps.core.services.AI.Agents.domains.product import manager as p
+
+        runs = []
+        enabled, trace_patch = self._patch_tracing(runs)
+
+        class _Msg:
+            def __init__(self, type_="ai", content=""):
+                self.type = type_
+                self.content = content
+
+        class _Agent:
+            def invoke(self, inp, config=None):
+                return {
+                    "messages": [
+                        *inp["messages"],
+                        _Msg("ai", json.dumps(
+                            {"summary": "done", "plan": ["step"], "risks": []}
+                        )),
+                    ]
+                }
+
+        with enabled, trace_patch:
+            agent = p.ProductMasterAgent()
+            with patch.object(agent, "_get_agent", return_value=_Agent()):
+                plan = agent.plan("do it")
+
+        self.assertEqual(plan["summary"], "done")
+        self.assertEqual(len(runs), 1)
+        self.assertEqual(runs[0]["name"], "ProductMasterAgent.plan")
+        self.assertTrue(runs[0]["run"].ended)
+        self.assertEqual(runs[0]["run"].outputs["plan"]["summary"], "done")
+        self.assertIn("Summary: done", runs[0]["run"].outputs["summary"])
+
+    def test_stream_turn_span_carries_summary(self):
+        import json
+        from unittest.mock import patch
+
+        from apps.core.services.AI.Agents.domains.product import manager as p
+
+        runs = []
+        enabled, trace_patch = self._patch_tracing(runs)
+
+        class _Msg:
+            def __init__(self, type_="ai", content=""):
+                self.type = type_
+                self.content = content
+
+        class _Agent:
+            def stream(self, inp, config=None, stream_mode=None):
+                final = {
+                    "messages": [
+                        *inp["messages"],
+                        _Msg("ai", json.dumps({"summary": "ok"})),
+                    ]
+                }
+                yield ("values", final)
+
+        with enabled, trace_patch:
+            agent = p.ProductMasterAgent()
+            with patch.object(agent, "_get_agent", return_value=_Agent()):
+                events = list(agent.stream("do it"))
+
+        plan_events = [e for e in events if e["type"] == "plan"]
+        self.assertEqual(len(plan_events), 1)
+        self.assertEqual(plan_events[0]["plan"]["summary"], "ok")
+        self.assertEqual(len(runs), 1)
+        self.assertEqual(runs[0]["name"], "ProductMasterAgent.stream")
+        self.assertTrue(runs[0]["run"].ended)
+        self.assertIn("Summary: ok", runs[0]["run"].outputs["summary"])
+
+    def test_stream_agent_propagates_context_into_thread(self):
+        import contextvars
+
+        from apps.core.services.AI.Agents.core import streaming
+
+        probe = contextvars.ContextVar("probe", default=None)
+        seen = []
+        probe.set("caller")
+
+        class _Agent:
+            def stream(self, inp, config=None, stream_mode=None):
+                seen.append(probe.get())
+                yield ("values", {"messages": []})
+
+        events = list(streaming.stream_agent(_Agent(), {"messages": []}))
+        self.assertTrue(any(e["type"] == "_done" for e in events))
+        self.assertEqual(seen, ["caller"])
+
+

@@ -239,16 +239,26 @@ class DomainManagerAgent(ConversationMemory):
             self._agent_mode = self.mode
         return self._agent
 
-    def _run_config(self, action: str) -> Dict[str, Any]:
-        """LangChain config for one turn: recursion limit + tracing identity."""
-        cfg = tracing.run_config(
+    def _run_identity(self, action: str) -> Dict[str, Any]:
+        """Run name / tags / metadata for one turn's LangSmith root run."""
+        return tracing.run_config(
             run_name=f"{type(self).__name__}.{action}",
             domain=self.DOMAIN,
             mode=self.mode,
             model=self.model,
         )
-        cfg["recursion_limit"] = self.recursion_limit
-        return cfg
+
+    def _turn_config(self) -> Dict[str, Any]:
+        """LangGraph child config: recursion limit only, so the graph nests
+        under the turn span (``run_name`` lives on the span, not the graph)."""
+        return {"recursion_limit": self.recursion_limit}
+
+    def _finalize_turn(
+        self, result: Dict[str, Any], start: int
+    ) -> Dict[str, Any]:
+        """Parse + render one turn's result into its plan and summary text."""
+        plan = self._parse_result(self._turn_messages(result, start))
+        return {"plan": plan, "text": format_plan(plan)}
 
     def _build_human_message(
         self,
@@ -451,17 +461,26 @@ class DomainManagerAgent(ConversationMemory):
         """
         agent = self._get_agent()
         prior = list(self.messages if history is None else history)
-        result = agent.invoke(
-            {
-                "messages": [
-                    *prior,
-                    ("human", self._build_human_message(task, links, images, context)),
-                ]
-            },
-            config=self._run_config("plan"),
-        )
-        self.messages = list(result.get("messages", []) or [])
-        return self._parse_result(self._turn_messages(result, len(prior)))
+        ident = self._run_identity("plan")
+        with tracing.turn_span(
+            ident["run_name"],
+            inputs={"task": task, "history_len": len(prior)},
+            tags=ident["tags"],
+            metadata=ident["metadata"],
+        ) as run:
+            result = agent.invoke(
+                {
+                    "messages": [
+                        *prior,
+                        ("human", self._build_human_message(task, links, images, context)),
+                    ]
+                },
+                config=self._turn_config(),
+            )
+            self.messages = list(result.get("messages", []) or [])
+            finalized = self._finalize_turn(result, len(prior))
+            tracing.finish_turn(run, finalized["plan"], finalized["text"])
+        return finalized["plan"]
 
     def stream(
         self,
@@ -493,23 +512,34 @@ class DomainManagerAgent(ConversationMemory):
                 ("human", self._build_human_message(task, links, images, context)),
             ]
         }
+        ident = self._run_identity("stream")
         last_state: Dict[str, Any] = {}
+        finalized: Dict[str, Any] = {}
         for event in stream_agent(
             agent,
             inp,
-            config=self._run_config("stream"),
+            config=self._turn_config(),
             heartbeat_seconds=HEARTBEAT_SECONDS,
+            run_name=ident["run_name"],
+            trace_inputs={"task": task, "history_len": len(prior)},
+            tags=ident["tags"],
+            metadata=ident["metadata"],
+            finalize=lambda state: self._finalize_turn(state, len(prior)),
         ):
             if event["type"] == "error":
                 yield event
                 return
             if event["type"] == "_done":
                 last_state = event["state"]
+                finalized = event.get("final") or {}
                 break
             yield event
 
         final_messages = list(last_state.get("messages", []) or [])
         if final_messages:
             self.messages = final_messages
-        plan = self._parse_result(self._turn_messages(last_state, len(prior)))
-        yield {"type": "plan", "plan": plan, "text": format_plan(plan)}
+        plan = finalized.get("plan") or self._parse_result(
+            self._turn_messages(last_state, len(prior))
+        )
+        text = finalized.get("text") or format_plan(plan)
+        yield {"type": "plan", "plan": plan, "text": text}

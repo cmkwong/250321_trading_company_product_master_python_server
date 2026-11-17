@@ -12,11 +12,13 @@ and passes it to :func:`stream_agent` explicitly, so tests can patch
 
 from __future__ import annotations
 
+import contextvars
 import queue
 import threading
 import time
-from typing import Any, Dict, Optional
+from typing import Any, Callable, Dict, Optional
 
+from . import tracing
 from .llm import chunk_text
 
 # How long stream_agent() waits for the next agent event before emitting a
@@ -32,35 +34,57 @@ def stream_agent(
     recursion_limit: int = 25,
     heartbeat_seconds: Optional[float] = None,
     config: Optional[Dict[str, Any]] = None,
+    run_name: Optional[str] = None,
+    trace_inputs: Optional[Dict[str, Any]] = None,
+    tags: Optional[list] = None,
+    metadata: Optional[Dict[str, Any]] = None,
+    finalize: Optional[Callable[[Dict[str, Any]], Dict[str, Any]]] = None,
 ):
     """Consume an agent graph on a background thread, yielding event dicts.
 
     Yields ``{"type": "status"|"token", ...}``, then a terminal
-    ``{"type": "_done", "state": {...}}`` or ``{"type": "error", "error": ...}``.
+    ``{"type": "_done", "state": {...}, "final": {...}}`` or
+    ``{"type": "error", "error": ...}``.
 
-    ``config`` (a LangChain ``RunnableConfig`` carrying e.g. ``run_name``,
-    ``tags`` and ``metadata`` for tracing) is merged into the config passed to
-    ``agent.stream``; ``recursion_limit`` fills in when ``config`` omits it.
+    ``config`` (a LangChain ``RunnableConfig``) is merged into the config passed
+    to ``agent.stream``; ``recursion_limit`` fills in when ``config`` omits it.
+
+    When ``run_name`` is given, the whole stream is wrapped in a LangSmith turn
+    span (:func:`tracing.turn_span`) opened inside the producer thread, and
+    ``finalize`` (run in the same thread, before the span closes) returns the
+    plan/text that become the run's outputs.  The caller's ``contextvars``
+    context is copied into the thread so the graph nests under the span.
     """
     heartbeat = HEARTBEAT_SECONDS if heartbeat_seconds is None else heartbeat_seconds
     announced = set()
-    last_state: Dict[str, Any] = {}
     q: "queue.Queue[Any]" = queue.Queue()
 
     def _produce() -> None:
         try:
             cfg = {"recursion_limit": recursion_limit, **(config or {})}
-            for item in agent.stream(
-                inp,
-                config=cfg,
-                stream_mode=["messages", "values"],
-            ):
-                q.put(("item", item))
-            q.put(("done", None))
+            state: Dict[str, Any] = {}
+            with tracing.turn_span(
+                run_name,
+                inputs=trace_inputs,
+                tags=tags,
+                metadata=metadata,
+            ) as run:
+                for mode, data in agent.stream(
+                    inp,
+                    config=cfg,
+                    stream_mode=["messages", "values"],
+                ):
+                    if mode == "values":
+                        state = data
+                    q.put(("item", (mode, data)))
+                extra = (finalize(state) if finalize is not None else {}) or {}
+                tracing.finish_turn(run, extra.get("plan"), extra.get("text", ""))
+            q.put(("done", {"state": state, "final": extra}))
         except Exception as exc:  # noqa: BLE001 - surface as a terminal event
             q.put(("error", exc))
 
-    threading.Thread(target=_produce, daemon=True).start()
+    ctx = contextvars.copy_context()
+    threading.Thread(target=ctx.run, args=(_produce,), daemon=True).start()
 
     idle_since = time.monotonic()
     while True:
@@ -73,7 +97,12 @@ def stream_agent(
 
         idle_since = time.monotonic()
         if kind == "done":
-            yield {"type": "_done", "state": last_state}
+            payload = payload or {}
+            yield {
+                "type": "_done",
+                "state": payload.get("state", {}),
+                "final": payload.get("final", {}),
+            }
             return
         if kind == "error":
             yield {"type": "error", "error": str(payload)}
@@ -95,6 +124,6 @@ def stream_agent(
             text = chunk_text(chunk)
             if text:
                 yield {"type": "token", "text": text}
-        else:  # "values": full state snapshot
-            last_state = data
+        else:  # "values": full state snapshot (already captured in _produce)
+            continue
 
