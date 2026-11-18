@@ -151,12 +151,27 @@ def run_config(
     model: str,
     tags: Optional[List[str]] = None,
     metadata: Optional[Dict[str, Any]] = None,
+    session_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Build the ``RunnableConfig`` a turn passes to ``invoke``/``stream``.
 
     ``run_name`` names the root graph run; the tags/metadata make traces
     filterable by agent id, environment, domain and mode in LangSmith.
+
+    ``session_id`` (the running conversation id) is added to the metadata under
+    the ``session_id`` key, which LangSmith uses to group every turn of a
+    conversation into a single thread.
     """
+    meta = {
+        "agent_id": agent_id(),
+        "agent_environment": agent_environment(),
+        "domain": domain,
+        "mode": mode,
+        "model": model,
+        **(metadata or {}),
+    }
+    if session_id:
+        meta["session_id"] = session_id
     return {
         "run_name": run_name,
         "tags": [
@@ -167,14 +182,7 @@ def run_config(
             mode,
             *(tags or []),
         ],
-        "metadata": {
-            "agent_id": agent_id(),
-            "agent_environment": agent_environment(),
-            "domain": domain,
-            "mode": mode,
-            "model": model,
-            **(metadata or {}),
-        },
+        "metadata": meta,
     }
 
 

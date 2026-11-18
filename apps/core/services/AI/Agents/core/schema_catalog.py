@@ -30,6 +30,7 @@ SCHEMA_DIR = NODE_SERVER_ROOT / "MVC" / "models" / "table_schema"
 MAX_FILE_CHARS = int(config.get("AI_MAX_FILE_CHARS", "20000"))
 
 
+# Extract table fields from Node schema files.
 def extract_table_fields(table_name: str) -> Optional[Dict[str, Any]]:
     """Extract the ``fields`` block for a table from the Node schema files on disk."""
     target = (table_name or "").strip()
@@ -171,7 +172,9 @@ def schema_table_names() -> List[str]:
     return sorted(load_schema_catalog().keys())
 
 
-def render_schema_catalog(tables: Iterable[str], *, include_descriptions: bool = False) -> str:
+def render_schema_catalog(
+    tables: Iterable[str], *, include_descriptions: bool = False
+) -> str:
     """Render compact ``- table(col TYPE [PK] [-> fk.table.fk])`` lines."""
     catalog = load_schema_catalog()
     lines: List[str] = []
@@ -195,4 +198,3 @@ def render_schema_catalog(tables: Iterable[str], *, include_descriptions: bool =
             parts.append(token)
         lines.append(f"- {name}(" + ", ".join(parts) + ")")
     return "\n".join(lines)
-

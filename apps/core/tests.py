@@ -1652,15 +1652,195 @@ class ManagerGeneralTests(TestCase):
         self.assertFalse(mem.compact()["compacted"])
 
     def test_record_stores_rendered_plan(self):
-        import json
-
         from apps.core.services.AI.Agents.core.memory import ConversationMemory
 
         mem = ConversationMemory()
         mem.record("do x", {"summary": "did", "plan": ["a"], "sql": [], "risks": []})
         self.assertEqual(mem.messages[0], ("human", "do x"))
-        # The assistant turn is stored as a JSON summary (not prose).
-        self.assertEqual(json.loads(mem.messages[1][1])["summary"], "did")
+        # The assistant turn concatenates the human request + summary + plan.
+        block = mem.messages[1][1]
+        self.assertIn("Human request: do x", block)
+        self.assertIn("Summary: did", block)
+        self.assertIn("1. a", block)
+
+    def test_render_turn_includes_answer_summary_plan(self):
+        from apps.core.services.AI.Agents.core.memory import render_turn
+
+        plan = {
+            "answer": "3 rows",
+            "summary": "Found categories",
+            "plan": ["read categories", "join assignments"],
+            "sql": [
+                {
+                    "purpose": "count",
+                    "statement": "SELECT COUNT(*)",
+                    "verification": "expected 3",
+                }
+            ],
+            "drafts": [
+                {
+                    "worker": "product_sql_builder",
+                    "purpose": "insert category",
+                    "statement": "INSERT INTO master_categories (name) VALUES ('x')",
+                }
+            ],
+            "missing_data": ["category id missing"],
+            "risks": ["assumes parent_id"],
+        }
+        text = render_turn("list unassigned categories", plan)
+        self.assertIn("Human request: list unassigned categories", text)
+        self.assertIn("Answer: 3 rows", text)
+        self.assertIn("Summary: Found categories", text)
+        self.assertIn("1. read categories", text)
+        self.assertIn("2. join assignments", text)
+        self.assertIn("SQL (count):", text)
+        self.assertIn("SELECT COUNT(*)", text)
+        self.assertIn("verify: expected 3", text)
+        self.assertIn("Drafts (not executed):", text)
+        self.assertIn("insert category", text)
+        self.assertIn("INSERT INTO master_categories", text)
+        self.assertIn("Missing data:", text)
+        self.assertIn("- category id missing", text)
+        self.assertIn("Risks:", text)
+        self.assertIn("- assumes parent_id", text)
+
+    def test_record_replays_previous_human_input_and_plan(self):
+        from apps.core.services.AI.Agents.core.memory import ConversationMemory
+
+        mem = ConversationMemory()
+        mem.record("first question", {"summary": "one", "plan": ["step 1"]})
+        mem.record("second question", {"summary": "two", "plan": ["step 2"]})
+
+        self.assertEqual(len(mem.history()), 4)
+        self.assertEqual(mem.history()[0], ("human", "first question"))
+        self.assertIn("Summary: one", mem.history()[1][1])
+        self.assertIn("Human request: first question", mem.history()[1][1])
+        self.assertEqual(mem.history()[2], ("human", "second question"))
+        self.assertIn("Summary: two", mem.history()[3][1])
+        self.assertIn("Human request: second question", mem.history()[3][1])
+
+    def test_render_turn_falls_back_to_worker_results(self):
+        from apps.core.services.AI.Agents.core.memory import render_turn
+
+        plan = {
+            "answer": "",
+            "summary": "",
+            "plan": [],
+            "sql": [],
+            "missing_data": [
+                "[unknown] Table not allowed for reading: master_product_attribute_assignments"
+            ],
+            "risks": [
+                "The model produced no structured reply and no executed SELECT rows were available."
+            ],
+            "worker_results": [
+                {
+                    "worker": "unknown",
+                    "ok": False,
+                    "error": "Table not allowed for reading: master_product_attribute_assignments",
+                },
+                {
+                    "worker": "product_sql_builder",
+                    "ok": True,
+                    "summary": "SELECT query finds all product categories with no attribute assignments.",
+                    "answer": "Found 2 product categories with no attributes:\n\n1. Baby Crib\n2. Bowl",
+                    "sql": [
+                        {
+                            "purpose": "Find product categories with no attribute assignments",
+                            "statement": "SELECT mc.id FROM master_categories mc",
+                            "verification": "LEFT JOIN filters NULL",
+                        }
+                    ],
+                    "plan": ["Describe schema", "Write LEFT JOIN", "Execute"],
+                    "tables_used": [
+                        "master_categories",
+                        "master_product_category_attribute_assign",
+                    ],
+                    "queries": [
+                        {
+                            "query": "SELECT mc.id FROM master_categories mc",
+                            "rowCount": 2,
+                            "rows": [],
+                        }
+                    ],
+                    "executed": True,
+                },
+            ],
+        }
+        text = render_turn("which category has no attribute", plan)
+        self.assertIn("Answer: Found 2 product categories", text)
+        self.assertIn("Summary: SELECT query finds", text)
+        self.assertIn("[product_sql_builder] Describe schema", text)
+        self.assertIn("SQL ([product_sql_builder] Find product categories", text)
+        self.assertIn("verify: LEFT JOIN filters NULL", text)
+        self.assertIn(
+            "Tables: master_categories, master_product_category_attribute_assign",
+            text,
+        )
+        self.assertIn("[unknown] FAILED", text)
+        self.assertIn("error: Table not allowed for reading", text)
+        self.assertIn("- 2 row(s):", text)
+
+    def test_render_turn_omits_row_payloads(self):
+        from apps.core.services.AI.Agents.core.memory import render_turn
+
+        plan = {
+            "worker_results": [
+                {
+                    "worker": "product_sql_builder",
+                    "ok": True,
+                    "answer": "Found 62 product categories.",
+                    "queries": [
+                        {
+                            "query": "SELECT mc.id FROM master_categories mc",
+                            "rowCount": 62,
+                            "rows": [
+                                {
+                                    "id": "f1000000-0000-0000-0000-000000000012",
+                                    "name": "Baby Crib",
+                                }
+                            ],
+                        }
+                    ],
+                    "executed": True,
+                }
+            ],
+        }
+        text = render_turn("", plan)
+        self.assertNotIn("f1000000-0000-0000-0000-000000000012", text)
+        self.assertNotIn("Baby Crib", text)
+        self.assertIn("62 row(s)", text)
+
+    def test_render_turn_dedupes_missing_data_and_risks(self):
+        from apps.core.services.AI.Agents.core.memory import render_turn
+
+        plan = {
+            "missing_data": ["dup"],
+            "risks": ["risk dup"],
+            "worker_results": [
+                {
+                    "worker": "w",
+                    "ok": True,
+                    "missing_data": ["dup", "unique"],
+                    "risks": ["risk dup"],
+                }
+            ],
+        }
+        text = render_turn("", plan)
+        self.assertEqual(text.count("- dup"), 1)
+        self.assertEqual(text.count("- risk dup"), 1)
+        self.assertIn("- unique", text)
+
+    def test_render_turn_respects_max_chars(self):
+        from unittest.mock import patch
+
+        from apps.core.services.AI.Agents.core.memory import render_turn
+
+        plan = {"summary": "x" * 5000}
+        with patch.dict("os.environ", {"AI_TURN_RENDER_MAX_CHARS": "100"}):
+            text = render_turn("t", plan)
+        self.assertIn("… (turn truncated)", text)
+        self.assertLessEqual(len(text), 100 + len("\n… (turn truncated)"))
 
     def test_reset_clears_messages(self):
         from apps.core.services.AI.Agents.core.memory import ConversationMemory
@@ -2042,6 +2222,20 @@ class TracingConfigTests(TestCase):
         self.assertEqual(cfg["metadata"]["model"], "qwen3.5")
         self.assertIn("agent_id", cfg["metadata"])
         self.assertIn("agent_environment", cfg["metadata"])
+        # No session_id by default.
+        self.assertNotIn("session_id", cfg["metadata"])
+
+    def test_run_config_includes_session_id(self):
+        from apps.core.services.AI.Agents.core import tracing
+
+        cfg = tracing.run_config(
+            run_name="ProductMasterAgent.plan",
+            domain="product",
+            mode="plan",
+            model="qwen3.5",
+            session_id="conv-123",
+        )
+        self.assertEqual(cfg["metadata"]["session_id"], "conv-123")
 
     def test_stream_agent_forwards_config(self):
         from apps.core.services.AI.Agents.core import streaming
@@ -2191,5 +2385,119 @@ class TracingTurnSpanTests(TestCase):
         events = list(streaming.stream_agent(_Agent(), {"messages": []}))
         self.assertTrue(any(e["type"] == "_done" for e in events))
         self.assertEqual(seen, ["caller"])
+
+
+class ConversationThreadTests(TestCase):
+    """Turns carry the replayed history and a shared LangSmith thread id."""
+
+    @staticmethod
+    def _patch_tracing(runs):
+        from contextlib import contextmanager
+        from unittest.mock import patch
+
+        from apps.core.services.AI.Agents.core import tracing
+
+        class _FakeRun:
+            def __init__(self):
+                self.outputs = None
+                self.ended = False
+
+            def end(self, outputs=None, error=None):
+                self.outputs = outputs
+                self.ended = True
+
+        @contextmanager
+        def fake_trace(name, run_type="chain", inputs=None, tags=None,
+                       metadata=None, **kwargs):
+            run = _FakeRun()
+            runs.append({
+                "name": name, "inputs": inputs, "tags": tags,
+                "metadata": metadata, "run": run,
+            })
+            yield run
+
+        return (
+            patch.object(tracing, "is_enabled", return_value=True),
+            patch("langsmith.trace", fake_trace),
+        )
+
+    def test_stream_trace_inputs_include_replayed_history(self):
+        import json
+        from unittest.mock import patch
+
+        from apps.core.services.AI.Agents.domains.product import manager as p
+
+        runs = []
+        enabled, trace_patch = self._patch_tracing(runs)
+
+        class _Msg:
+            def __init__(self, type_="ai", content=""):
+                self.type = type_
+                self.content = content
+
+        class _Agent:
+            def stream(self, inp, config=None, stream_mode=None):
+                final = {
+                    "messages": [
+                        *inp["messages"],
+                        _Msg("ai", json.dumps({"summary": "ok"})),
+                    ]
+                }
+                yield ("values", final)
+
+        with enabled, trace_patch:
+            agent = p.ProductMasterAgent()
+            with patch.object(agent, "_get_agent", return_value=_Agent()):
+                list(agent.stream("first question"))
+                list(agent.stream("second question"))
+
+        self.assertEqual(len(runs), 2)
+        # First turn replays nothing.
+        self.assertEqual(runs[0]["inputs"]["history_len"], 0)
+        self.assertEqual(runs[0]["inputs"]["history"], [])
+        # Second turn's trace input carries the actual prior conversation.
+        self.assertEqual(runs[1]["inputs"]["history_len"], 2)
+        history = runs[1]["inputs"]["history"]
+        self.assertEqual([h["role"] for h in history], ["human", "ai"])
+        self.assertIn("first question", history[0]["content"])
+        self.assertIn("ok", history[1]["content"])
+
+    def test_turn_config_and_identity_carry_session_id(self):
+        from apps.core.services.AI.Agents.domains.product import manager as p
+
+        agent = p.ProductMasterAgent(conversation_id="conv-abc")
+        self.assertEqual(agent._run_identity("stream")["metadata"]["session_id"], "conv-abc")
+        self.assertEqual(
+            agent._turn_config()["metadata"]["session_id"], "conv-abc"
+        )
+
+    def test_reset_rotates_conversation_id(self):
+        from apps.core.services.AI.Agents.core.memory import ConversationMemory
+
+        mem = ConversationMemory()
+        first = mem.conversation_id
+        mem.reset()
+        self.assertNotEqual(mem.conversation_id, first)
+        self.assertEqual(mem.messages, [])
+
+    def test_history_grows_across_turns(self):
+        from apps.core.services.AI.Agents.core.router import GeneralManagerAgent
+
+        agent = GeneralManagerAgent(pinned="product")
+        calls = []
+
+        class _Sub:
+            def stream(self, task, history=None):
+                calls.append(list(history or []))
+                plan = {"summary": "done", "sql": [], "risks": []}
+                yield {"type": "plan", "plan": plan, "text": "Summary: done"}
+
+        agent._managers["product"] = _Sub()
+
+        list(agent.stream("one"))
+        list(agent.stream("two"))
+        list(agent.stream("three"))
+
+        self.assertEqual([len(c) for c in calls], [0, 2, 4])
 
 

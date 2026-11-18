@@ -187,6 +187,10 @@ class GeneralManagerAgent(ConversationMemory):
         super().reset()
         self.last_plan = None
         self.last_domain = self.pinned or "product"
+        # super().reset() rotated conversation_id; push it onto any already-built
+        # domain managers so their next turns land in the new LangSmith thread.
+        for manager in self._managers.values():
+            manager.conversation_id = self.conversation_id
 
     # -- domain managers ----------------------------------------------------
     def _manager(self, domain: str):
@@ -205,6 +209,7 @@ class GeneralManagerAgent(ConversationMemory):
                 model=self.model,
                 temperature=self.temperature,
                 recursion_limit=self.recursion_limit,
+                conversation_id=self.conversation_id,
             )
         if domain == "sales":
             from apps.core.services.AI.Agents.domains.sales.manager import (
@@ -215,6 +220,7 @@ class GeneralManagerAgent(ConversationMemory):
                 model=self.model,
                 temperature=self.temperature,
                 recursion_limit=self.recursion_limit,
+                conversation_id=self.conversation_id,
             )
         raise ValueError(f"Unknown domain: {domain!r}")
 
@@ -286,6 +292,7 @@ class GeneralManagerAgent(ConversationMemory):
         self.last_domain = domain
         sub = self._manager(domain)
         yield {"type": "status", "text": f"domain: {domain}"}
+        yield {"type": "status", "text": f"history: {len(self.messages)} message(s)"}
         plan: Optional[ProductPlan] = None
         for event in sub.stream(task, history=self.history()):
             if event["type"] == "plan":

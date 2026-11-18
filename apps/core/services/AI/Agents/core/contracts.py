@@ -121,6 +121,7 @@ class Plan(BaseModel):
         return self.model_dump(exclude_none=True)
 
 
+# JSON extraction utility for free-form model text.
 def _extract_json_block(text: str) -> Optional[Dict[str, Any]]:
     """Pull the first ``{...}`` JSON object out of free-form model text."""
     if not text:

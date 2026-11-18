@@ -11,9 +11,17 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
+import json
+import re
 from langchain_core.tools import tool
+from langchain_core.messages import HumanMessage, SystemMessage
+from pydantic import BaseModel, Field, field_validator
 
+from apps.core.services.AI.Agents.core.llm import message_text
+from apps.core.services.AI.Agents.core.master_api import _rows
 from apps.core.services.AI.Agents.core.contracts import (
+    MasterApiError,
+    _tool_error,
     as_sql_list,
     as_str_list,
     dump_worker_result,
@@ -37,7 +45,184 @@ from apps.core.services.AI.Agents.core.plan_tools import (
     execute_select_query,
 )
 
+
+class _Reuse(BaseModel):
+    name: str
+    reason: str = ""
+
+
+class _New(BaseModel):
+    name: str = Field(description="snake_case, e.g. suitable_pet")
+    label: str = Field(description="short Title Case label, max 3 words")
+    description: str = ""
+    multiple_selection: bool = False
+    values: List[str] = Field(default_factory=list, description="2-12 dropdown values")
+    reason: str = ""
+
+    @field_validator("name")
+    @classmethod
+    def _snake(cls, v: str) -> str:
+        return re.sub(r"[^a-z0-9]+", "_", str(v).strip().lower()).strip("_")
+
+
+class _Proposal(BaseModel):
+    reuse: List[_Reuse] = Field(default_factory=list)
+    create: List[_New] = Field(default_factory=list)
+    missing_data: List[str] = Field(default_factory=list)
+
+
+_PROPOSE_PROMPT = """You are a product-data architect for a trading company.
+Decide which attributes buyers need to filter and compare products in ONE category.
+
+Rules:
+1. PREFER reusing an existing attribute. Create a new one only if no existing
+   attribute covers the meaning (check names AND labels, including synonyms).
+2. Choose attributes that distinguish products inside THIS category
+   (material, size, capacity, power type...). Skip generic ones it does not need.
+3. name: snake_case ASCII. label: short Title Case, max 3 words.
+4. Dropdown values: 2-12 concise, mutually exclusive, real-world values.
+   If values are open-ended, leave values empty.
+5. multiple_selection = true only when a product can have several values at once.
+6. Do not repeat attributes already assigned to the category.
+7. At most MAX_NEW new attributes. Put doubts in missing_data.
+Return ONLY a JSON object with keys: reuse, create, missing_data."""
+
+
+def _propose(category: dict, catalog: list, assigned: list, max_new: int) -> _Proposal:
+    llm = build_llm(DEFAULT_MODEL, temperature=0.0)
+    messages = [
+        SystemMessage(content=_PROPOSE_PROMPT.replace("MAX_NEW", str(max_new))),
+        HumanMessage(
+            content=json.dumps(
+                {
+                    "category": {
+                        "name": category.get("name"),
+                        "description": category.get("description"),
+                    },
+                    "existing_attributes": [
+                        {"name": a.get("name"), "label": a.get("label")}
+                        for a in catalog
+                    ],
+                    "already_assigned": assigned,
+                },
+                ensure_ascii=False,
+            )
+        ),
+    ]
+    try:
+        out = llm.with_structured_output(_Proposal, method="json_schema").invoke(
+            messages
+        )
+        if isinstance(out, _Proposal):
+            return out
+        if isinstance(out, dict):
+            return _Proposal.model_validate(out)
+    except Exception:  # noqa: BLE001 - model/package without structured output
+        pass
+    raw = message_text(llm.invoke(messages))
+    return _Proposal.model_validate(extract_json_block(raw) or {})
+
+
+@tool
+def suggest_category_attributes(category: str, max_new: int = 5) -> str:
+    """Decide which attributes (label + dropdown values) a product category should have.
+
+    Use when the user asks what attributes a category needs, or to "set up" a
+    category without naming exact attributes. Returns validated `steps`
+    ("assign" an existing attribute, or "create" a new one with label and values).
+    It builds NO SQL and writes nothing: call the build_* tools for each step.
+    Do NOT use when the user already gave exact attribute names and values.
+    """
+    try:
+        max_new = max(1, min(int(max_new or 5), 8))
+        cats = _rows("master_categories")
+        key = str(category or "").strip().lower()
+        cat = next(
+            (
+                c
+                for c in cats
+                if key in (str(c.get("name", "")).lower(), str(c.get("id", "")).lower())
+            ),
+            None,
+        )
+        if cat is None:
+            return json.dumps(
+                {
+                    "ok": False,
+                    "error": f"category {category!r} not found",
+                    "hint": "Use fetch_category_tree to find the exact name.",
+                },
+                ensure_ascii=False,
+            )
+
+        catalog = _rows("master_product_attributes")
+        by_name = {str(a.get("name")): a for a in catalog}
+        assign = _rows("master_product_category_attribute_assign")
+        assigned_ids = {
+            r.get("attribute_id")
+            for r in assign
+            if r.get("category_id") == cat.get("id")
+        }
+        assigned = [str(a.get("name")) for a in catalog if a.get("id") in assigned_ids]
+
+        proposal = _propose(cat, catalog, assigned, max_new)
+
+        steps: List[Dict[str, Any]] = []
+        risks: List[str] = []
+        for r in proposal.reuse:
+            if r.name not in by_name:
+                risks.append(
+                    f"model proposed unknown existing attribute {r.name!r}; ignored"
+                )
+            elif r.name not in assigned:
+                steps.append(
+                    {"kind": "assign", "attribute": r.name, "reason": r.reason}
+                )
+        for n in proposal.create[:max_new]:
+            if not n.name:
+                continue
+            if n.name in by_name:  # model missed that it already exists
+                if n.name not in assigned:
+                    steps.append(
+                        {
+                            "kind": "assign",
+                            "attribute": n.name,
+                            "reason": "already exists; reused",
+                        }
+                    )
+                continue
+            values = list(
+                dict.fromkeys(v.strip() for v in n.values if v and v.strip())
+            )[:12]
+            steps.append(
+                {
+                    "kind": "create",
+                    "attribute": n.name,
+                    "label": n.label or n.name,
+                    "description": n.description,
+                    "multiple_selection": n.multiple_selection,
+                    "values": values,
+                    "reason": n.reason,
+                }
+            )
+        return json.dumps(
+            {
+                "ok": True,
+                "category": {"id": cat.get("id"), "name": cat.get("name")},
+                "steps": steps,
+                "missing_data": proposal.missing_data,
+                "risks": risks,
+            },
+            ensure_ascii=False,
+        )
+    except MasterApiError as exc:
+        return _tool_error(exc)
+    except Exception as exc:  # noqa: BLE001 - always return an envelope
+        return json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False)
+
+
 ATTRIBUTE_TOOLS = [
+    suggest_category_attributes,
     list_master_tables,
     get_master_table_schema,
     fetch_category_tree,
@@ -72,7 +257,15 @@ verify ids / rows); every write SQL you output is text for a human to review.
   UNIQUE(category_id, attribute_id).
 
 ## Working rules
-1. Start by calling get_master_table_schema for the tables you plan to touch.
+1. If the user did NOT name exact attributes, call
+   suggest_category_attributes(category) first, then follow its `steps`:
+   - kind "create": call build_create_attribute_sql (name, label, description,
+     multiple_selection), then build_attribute_dropdown_sql for its `values`
+     if any, then build_category_attribute_assign_sql for the category.
+   - kind "assign": call build_category_attribute_assign_sql only.
+   Drop a step that looks wrong and say why in `risks`.
+   If the user DID name exact attributes, skip it. Call get_master_table_schema
+   only when a column is unknown.
 2. Discover categories with fetch_category_tree and attributes with
    fetch_attribute_catalog.  Attribute `name` is snake_case (e.g. suitable_pet);
    match against `name` or `label` -- NEVER guess spelling.
@@ -84,7 +277,7 @@ verify ids / rows); every write SQL you output is text for a human to review.
 5. To add dropdown values, call build_attribute_dropdown_sql.
 6. To assign attributes to a category, call build_category_attribute_assign_sql
    and copy its `sql`, `verification_before` and `verification_after` verbatim.
-7. Never invent ids.  If you cannot resolve a name, put it in missing_data.
+7. Copy suggested names and values exactly; do not rename them.
 
 ## Output contract
 Return exactly ONE JSON object (no prose, no markdown fences) with:

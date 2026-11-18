@@ -92,6 +92,7 @@ _ROUTE = {
 }
 
 
+# Execute the approved SQL plan either in batch or sequentially.
 def execute_plan(
     plan: Dict[str, Any],
     *,

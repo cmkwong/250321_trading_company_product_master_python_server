@@ -14,28 +14,194 @@ through this module.
 
 from __future__ import annotations
 
-import json
+import uuid
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from apps.core import config
 
-from .contracts import as_sql_list, as_str_list
+from .contracts import as_dict_list, as_sql_list, as_str_list
 from .llm import build_llm
 
 if TYPE_CHECKING:  # type annotations only; avoids an engine <-> memory cycle
     from .engine import ProductPlan
 
 
-def _plan_summary(plan: "ProductPlan") -> Dict[str, Any]:
-    """Trim a plan to the fields worth keeping in the conversation history."""
-    return {
-        "answer": str(plan.get("answer", "")),
-        "summary": str(plan.get("summary", "")),
-        "plan": as_str_list(plan.get("plan")),
-        "sql": as_sql_list(plan.get("sql")),
-        "missing_data": as_str_list(plan.get("missing_data")),
-        "risks": as_str_list(plan.get("risks")),
-    }
+def _clip(text: Any, limit: int) -> str:
+    """Collapse to a length-capped string for the history block."""
+    value = str(text or "").strip()
+    if len(value) <= limit:
+        return value
+    return value[:limit].rstrip() + "…"
+
+
+def _merged(*values: Any) -> List[str]:
+    """De-duplicate a union of list-valued fields, preserving order."""
+    out: List[str] = []
+    for value in values:
+        for item in as_str_list(value):
+            if item not in out:
+                out.append(item)
+    return out
+
+
+def render_turn(task: str, plan: "ProductPlan") -> str:
+    """Render a finished turn as a readable block for the next turn's history.
+
+    Concatenates the human request with the plan's ``answer``, ``summary``,
+    ``plan`` steps, ``sql``, ``missing_data`` and ``risks``, plus the
+    ``worker_results`` (per-worker status / summary / error / tables / queries),
+    ``drafts`` and ``skipped_sql`` the top-level fields normally omit.  The
+    top-level value wins; when it is empty the successful workers fill the gap
+    (the ``_parse_result`` fallback path leaves ``answer``/``summary``/``plan``/
+    ``sql`` empty even though a worker fetched the rows).  Raw ``queries[].rows``
+    payloads are deliberately excluded to keep history cheap, and the whole block
+    is capped at ``AI_TURN_RENDER_MAX_CHARS``.  The human message and system
+    prompt still instruct the model to answer with a single JSON object, and
+    :meth:`core.engine.DomainManagerAgent._parse_result` falls back to the
+    fetched rows if the model drifts into prose.
+    """
+    workers = as_dict_list(plan.get("worker_results"))
+    ok_workers = [w for w in workers if w.get("ok") and not w.get("error")]
+    task_text = str(task or "").strip()
+    lines: List[str] = []
+    if task_text:
+        lines.append(f"Human request: {task_text}")
+
+    answer = str(plan.get("answer", "") or "").strip()
+    if not answer:
+        answer = "\n".join(
+            _clip(w.get("answer"), 1200)
+            for w in ok_workers
+            if str(w.get("answer", "") or "").strip()
+        )
+    if answer:
+        lines.append(f"Answer: {answer}")
+
+    summary = str(plan.get("summary", "") or "").strip()
+    if not summary:
+        summary = next(
+            (
+                str(w.get("summary", "") or "").strip()
+                for w in ok_workers
+                if str(w.get("summary", "") or "").strip()
+            ),
+            "",
+        )
+    if summary:
+        lines.append(f"Summary: {_clip(summary, 600)}")
+
+    steps = as_str_list(plan.get("plan"))
+    if not steps:
+        for w in ok_workers:
+            for step in as_str_list(w.get("plan")):
+                steps.append(f"[{w.get('worker', '?')}] {step}")
+    if steps:
+        lines.append("Plan:")
+        lines.extend(f"  {i + 1}. {step}" for i, step in enumerate(steps))
+
+    sql_steps = as_sql_list(plan.get("sql"))
+    if not sql_steps:
+        for w in ok_workers:
+            for step in as_sql_list(w.get("sql")):
+                if step.get("statement"):
+                    sql_steps.append(
+                        {
+                            "purpose": f"[{w.get('worker', '?')}] "
+                            + step.get("purpose", ""),
+                            "statement": step.get("statement", ""),
+                            "verification": step.get("verification", ""),
+                        }
+                    )
+    for step in sql_steps:
+        statement = str(step.get("statement", "") or "").strip()
+        if not statement:
+            continue
+        purpose = str(step.get("purpose", "") or "").strip()
+        lines.append(f"SQL ({purpose}):" if purpose else "SQL:")
+        lines.append("  " + _clip(statement, 1500).replace("\n", "\n  "))
+        verification = str(step.get("verification", "") or "").strip()
+        if verification:
+            lines.append("  verify: " + _clip(verification, 300).replace("\n", "\n  "))
+    drafts = as_sql_list(plan.get("drafts"))
+    if drafts:
+        lines.append("Drafts (not executed):")
+        for step in drafts:
+            statement = str(step.get("statement", "") or "").strip()
+            if not statement:
+                continue
+            label = str(step.get("worker", "") or "").strip()
+            purpose = _clip(step.get("purpose", ""), 300)
+            if label:
+                lines.append(f"  - [{label}] {purpose}")
+            else:
+                lines.append(f"  - {purpose}")
+            lines.append("    " + _clip(statement, 600).replace("\n", "\n    "))
+
+    if workers:
+        lines.append("Workers:")
+        for w in workers:
+            name = str(w.get("worker", "") or "?").strip()
+            flags = ["FAILED"] if (not w.get("ok") or w.get("error")) else ["ok"]
+            if w.get("executed"):
+                flags.append("executed")
+            row_counts = [
+                int(q.get("rowCount", 0) or 0) for q in as_dict_list(w.get("queries"))
+            ]
+            if row_counts:
+                flags.append(f"{sum(row_counts)} row(s)")
+            head = f"  - [{name}] {', '.join(flags)}"
+            worker_summary = _clip(w.get("summary"), 300)
+            lines.append(f"{head}: {worker_summary}" if worker_summary else head)
+            if w.get("error"):
+                lines.append(f"    error: {_clip(w['error'], 300)}")
+
+    tables: List[str] = []
+    for w in workers:
+        for table in as_str_list(w.get("tables_used")):
+            if table not in tables:
+                tables.append(table)
+    if tables:
+        suffix = " …" if len(tables) > 20 else ""
+        lines.append("Tables: " + ", ".join(tables[:20]) + suffix)
+
+    query_lines: List[str] = []
+    for w in workers:
+        for q in as_dict_list(w.get("queries")):
+            statement = " ".join(str(q.get("query", "") or "").split())
+            if not statement:
+                continue
+            count = int(q.get("rowCount", 0) or 0)
+            query_lines.append(f"  - {count} row(s): {_clip(statement, 160)}")
+    if query_lines:
+        lines.append("Queries:")
+        lines.extend(query_lines)
+
+    missing = _merged(
+        plan.get("missing_data"), *[w.get("missing_data") for w in workers]
+    )
+    if missing:
+        lines.append("Missing data:")
+        lines.extend(f"  - {item}" for item in missing)
+
+    risks = _merged(plan.get("risks"), *[w.get("risks") for w in workers])
+    if risks:
+        lines.append("Risks:")
+        lines.extend(f"  - {item}" for item in risks)
+
+    skipped = as_dict_list(plan.get("skipped_sql"))
+    if skipped:
+        lines.append("Skipped statements:")
+        for entry in skipped:
+            statement = " ".join(str(entry.get("statement", "") or "").split())
+            if not statement:
+                continue
+            lines.append(f"  - {entry.get('verb', '?')}: {_clip(statement, 200)}")
+
+    text = "\n".join(lines)
+    limit = int(config.get("AI_TURN_RENDER_MAX_CHARS", "4000"))
+    if limit > 0 and len(text) > limit:
+        text = text[:limit].rstrip() + "\n… (turn truncated)"
+    return text
 
 
 class ConversationMemory:
@@ -47,31 +213,38 @@ class ConversationMemory:
     safe to hand to a different domain manager.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, conversation_id: Optional[str] = None) -> None:
         self.messages: List[Any] = []
         self.compactions: int = 0
+        # One id per running conversation; shared with the domain managers so
+        # every turn traces into the same LangSmith thread.  ``/new`` rotates it.
+        self.conversation_id: str = conversation_id or str(uuid.uuid4())
 
     def reset(self) -> None:
-        """Forget the conversation history (the agents and prompts stay loaded)."""
+        """Forget the conversation history (the agents and prompts stay loaded).
+
+        Also rotates ``conversation_id`` so the next turn starts a fresh
+        LangSmith thread instead of appending to the cleared one.
+        """
         self.messages = []
+        self.conversation_id = str(uuid.uuid4())
 
     def history(self) -> List[Any]:
         """Return a copy of the conversation to replay before the next turn."""
         return list(self.messages)
 
-    def record(self, task: str, plan: "ProductPlan") -> None:
-        """Append a finished turn to the history as (human, JSON summary) pairs.
+    def record(self, task: str, plan: ProductPlan) -> None:
+        """Append a finished turn to the history as ``(human, ai)`` pairs.
 
-        The assistant turn is stored as a JSON object (not the prose
-        ``format_plan``) so the replayed assistant message stays consistent with
-        the agents' "return exactly one JSON object" output contract.  Storing
-        prose would make the model imitate the "Answer:/Summary:" layout on the
-        next turn instead of emitting parseable JSON.
+        The assistant turn is stored as the readable :func:`render_turn` block
+        (human request + answer + summary + plan + missing data/risks), so the
+        next turn replays the real context rather than a bare JSON blob.  The
+        human message and system prompt still demand a single JSON object, and
+        ``_parse_result`` falls back to the fetched rows if the model drifts
+        into prose.
         """
         self.messages.append(("human", str(task)))
-        self.messages.append(
-            ("ai", json.dumps(_plan_summary(plan), ensure_ascii=False))
-        )
+        self.messages.append(("ai", render_turn(task, plan)))
 
     def transcript(self, limit: Optional[int] = None) -> str:
         """Render the whole conversation as plain text (for compaction/routing)."""
@@ -135,4 +308,3 @@ product/category/sales document names and ids, decisions taken, any SQL already 
 drafted (verbatim), and open questions. Drop pleasantries and already-resolved \
 dead ends. Reply with a single prose summary of at most {max_words} words, no \
 markdown headers. Keep any pending SQL inline, verbatim."""
-

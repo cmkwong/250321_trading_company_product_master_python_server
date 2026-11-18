@@ -28,7 +28,7 @@ from .guardrail import (
 )  # noqa: F401  (re-exports)
 from . import tracing
 from .llm import DEFAULT_MODEL, NUM_CTX, build_llm
-from .memory import ConversationMemory
+from .memory import ConversationMemory, render_turn
 from .streaming import HEARTBEAT_SECONDS, stream_agent
 from .contracts import (
     WorkerResult,
@@ -214,8 +214,9 @@ class DomainManagerAgent(ConversationMemory):
         temperature: float = 0.0,
         recursion_limit: int = 25,
         mode: str = "plan",
+        conversation_id: Optional[str] = None,
     ) -> None:
-        super().__init__()
+        super().__init__(conversation_id=conversation_id)
         tracing.configure_tracing()
         self.model = model or DEFAULT_MODEL
         self.temperature = temperature
@@ -246,16 +247,59 @@ class DomainManagerAgent(ConversationMemory):
             domain=self.DOMAIN,
             mode=self.mode,
             model=self.model,
+            session_id=self.conversation_id,
         )
 
     def _turn_config(self) -> Dict[str, Any]:
         """LangGraph child config: recursion limit only, so the graph nests
-        under the turn span (``run_name`` lives on the span, not the graph)."""
-        return {"recursion_limit": self.recursion_limit}
+        under the turn span (``run_name`` lives on the span, not the graph).
 
-    def _finalize_turn(
-        self, result: Dict[str, Any], start: int
-    ) -> Dict[str, Any]:
+        The ``session_id`` metadata is repeated here so the graph and every
+        child LLM/tool run carry the same LangSmith thread key as the span
+        (LangSmith requires it on all runs for thread grouping to work)."""
+        config: Dict[str, Any] = {"recursion_limit": self.recursion_limit}
+        if self.conversation_id:
+            config["metadata"] = {"session_id": self.conversation_id}
+        return config
+
+    @staticmethod
+    def _trace_history(
+        prior: List[Any], limit: int = 20, max_chars: int = 4000
+    ) -> List[Dict[str, str]]:
+        """Render the replayed conversation as JSON-safe ``role``/``content`` dicts.
+
+        ``prior`` holds either ``("human" | "ai", text)`` tuples (what
+        :meth:`ConversationMemory.record` stores) or LangChain message objects
+        (``.type`` / ``.content``).  A stored assistant turn is already the
+        readable :func:`render_turn` block; a raw JSON assistant object (the
+        direct-agent path) is re-rendered into the same shape so the trace stays
+        uniform.  Keeps the last ``limit`` entries and truncates each content to
+        ``max_chars`` so the turn-span inputs stay readable without duplicating
+        whole SQL/worker payloads.
+        """
+        out: List[Dict[str, str]] = []
+        for message in prior[-limit:]:
+            if isinstance(message, (tuple, list)) and len(message) == 2:
+                role, content = str(message[0]), message[1]
+            else:
+                role = getattr(message, "type", None) or "?"
+                content = getattr(message, "content", "") or ""
+            if isinstance(content, list):
+                content = "".join(
+                    str(part) if isinstance(part, str) else str(part.get("text", ""))
+                    for part in content
+                )
+            text = str(content or "")
+            if role == "ai":
+                data = extract_json_block(text)
+                if isinstance(data, dict) and ("summary" in data or "plan" in data):
+                    text = render_turn("", data)
+            if len(text) > max_chars:
+                text = text[:max_chars] + "…"
+            out.append({"role": role, "content": text})
+        return out
+
+    def _finalize_turn(self, result: Dict[str, Any], start: int) -> Dict[str, Any]:
         """Parse + render one turn's result into its plan and summary text."""
         plan = self._parse_result(self._turn_messages(result, start))
         return {"plan": plan, "text": format_plan(plan)}
@@ -293,9 +337,9 @@ class DomainManagerAgent(ConversationMemory):
             )
         else:
             lines.append(
-                "\nUse the tool or worker that fits the request. Answer informational "
+                "\nUse the tools that fits the request. Answer informational "
                 "requests from data; draft SQL only for change requests. You could build "
-                "SQL SELECT statements for review if appropriate."
+                "any SQL statements for completion the task."
             )
         return "\n".join(lines)
 
@@ -464,7 +508,11 @@ class DomainManagerAgent(ConversationMemory):
         ident = self._run_identity("plan")
         with tracing.turn_span(
             ident["run_name"],
-            inputs={"task": task, "history_len": len(prior)},
+            inputs={
+                "task": task,
+                "history_len": len(prior),
+                "history": self._trace_history(prior),
+            },
             tags=ident["tags"],
             metadata=ident["metadata"],
         ) as run:
@@ -472,7 +520,10 @@ class DomainManagerAgent(ConversationMemory):
                 {
                     "messages": [
                         *prior,
-                        ("human", self._build_human_message(task, links, images, context)),
+                        (
+                            "human",
+                            self._build_human_message(task, links, images, context),
+                        ),
                     ]
                 },
                 config=self._turn_config(),
@@ -521,7 +572,11 @@ class DomainManagerAgent(ConversationMemory):
             config=self._turn_config(),
             heartbeat_seconds=HEARTBEAT_SECONDS,
             run_name=ident["run_name"],
-            trace_inputs={"task": task, "history_len": len(prior)},
+            trace_inputs={
+                "task": task,
+                "history_len": len(prior),
+                "history": self._trace_history(prior),
+            },
             tags=ident["tags"],
             metadata=ident["metadata"],
             finalize=lambda state: self._finalize_turn(state, len(prior)),

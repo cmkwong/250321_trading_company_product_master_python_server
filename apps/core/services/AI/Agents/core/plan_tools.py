@@ -355,6 +355,57 @@ def build_category_attribute_assign_sql(category: str, attributes: List[str]) ->
     )
 
 
+# Build SQL for creating a new product attribute. Returns a dict with SQL and verification queries.
+def _create_attribute_sql(
+    name,  # attribute name
+    label="",
+    description="",
+    multiple_selection=False,
+    dropdown_reference="",
+    catalog_default_display=False,
+) -> dict:
+    """Pure builder. Returns a dict, never a JSON string."""
+    name = (name or "").strip()
+    label = (label or "").strip() or name
+    if not sqlguard.ATTRIBUTE_NAME_RE.match(name):
+        return {
+            "ok": False,
+            "error": f"invalid attribute name {name!r} (must be snake_case)",
+        }
+
+    existing = master_api._rows("master_product_attributes")
+    if any(str(a.get("name", "")) == name for a in existing):
+        return {"ok": True, "already_exists": True, "name": name, "sql": ""}
+
+    lit = sqlguard._sql_literal
+    cols = ["id", "name", "label"]
+    vals = ["UUID()", lit(name), lit(label)]
+    if description:
+        cols.append("description")
+        vals.append(lit(description))
+    if dropdown_reference:
+        cols.append("dropdown_reference")
+        vals.append(lit(dropdown_reference))
+    cols += ["multiple_selection", "catalog_default_display"]
+    vals += [
+        "1" if multiple_selection else "0",
+        "1" if catalog_default_display else "0",
+    ]
+
+    sql = (
+        f"INSERT INTO master_product_attributes ({', '.join(cols)})\n"
+        f"SELECT {', '.join(vals)}\n"
+        f"WHERE NOT EXISTS (SELECT 1 FROM master_product_attributes WHERE name = {lit(name)});"
+    )
+    return {
+        "ok": True,
+        "name": name,
+        "sql": sql,
+        "verification_before": f"SELECT id, name FROM master_product_attributes WHERE name = {lit(name)};",
+        "verification_after": f"SELECT COUNT(*) AS created FROM master_product_attributes WHERE name = {lit(name)};",
+    }
+
+
 @tool
 def build_create_attribute_sql(
     name: str,
@@ -364,68 +415,18 @@ def build_create_attribute_sql(
     dropdown_reference: str = "",
     catalog_default_display: bool = False,
 ) -> str:
-    """Build an idempotent MySQL INSERT creating one attribute in master_product_attributes. Validates the snake_case name. Read-only: nothing is executed."""
+    """Build an idempotent INSERT for ONE attribute whose name/label are already decided.
+    To decide the attributes for a category, use `suggest_category_attributes` first."""
     try:
-        name = (name or "").strip()
-        label = (label or "").strip() or name
-        if not sqlguard.ATTRIBUTE_NAME_RE.match(name):
-            return json.dumps(
-                {
-                    "ok": False,
-                    "error": f"invalid attribute name {name!r} (must be snake_case)",
-                },
-                ensure_ascii=False,
-            )
-
-        existing = master_api._rows("master_product_attributes")
-        if any(str(a.get("name", "")) == name for a in existing):
-            return json.dumps(
-                {
-                    "ok": True,
-                    "already_exists": True,
-                    "name": name,
-                    "sql": "-- attribute already exists, nothing to insert",
-                    "verification_before": "-- none",
-                    "verification_after": (
-                        f"SELECT COUNT(*) AS cnt FROM master_product_attributes "
-                        f"WHERE name = {sqlguard._sql_literal(name)};"
-                    ),
-                },
-                ensure_ascii=False,
-            )
-
-        cols = ["id", "name", "label"]
-        vals = ["UUID()", sqlguard._sql_literal(name), sqlguard._sql_literal(label)]
-        if description:
-            cols.append("description")
-            vals.append(sqlguard._sql_literal(description))
-        if dropdown_reference:
-            cols.append("dropdown_reference")
-            vals.append(sqlguard._sql_literal(dropdown_reference))
-        cols.append("multiple_selection")
-        vals.append("1" if multiple_selection else "0")
-        cols.append("catalog_default_display")
-        vals.append("1" if catalog_default_display else "0")
-
-        sql = (
-            f"INSERT INTO master_product_attributes ({', '.join(cols)})\n"
-            f"SELECT {', '.join(vals)}\n"
-            f"WHERE NOT EXISTS (SELECT 1 FROM master_product_attributes "
-            f"WHERE name = {sqlguard._sql_literal(name)});"
-        )
-        verification_before = f"SELECT id, name FROM master_product_attributes WHERE name = {sqlguard._sql_literal(name)};"
-        verification_after = (
-            f"SELECT COUNT(*) AS created FROM master_product_attributes "
-            f"WHERE name = {sqlguard._sql_literal(name)};"
-        )
         return json.dumps(
-            {
-                "ok": True,
-                "name": name,
-                "sql": sql,
-                "verification_before": verification_before,
-                "verification_after": verification_after,
-            },
+            _create_attribute_sql(
+                name,
+                label,
+                description,
+                multiple_selection,
+                dropdown_reference,
+                catalog_default_display,
+            ),
             ensure_ascii=False,
         )
     except MasterApiError as exc:
