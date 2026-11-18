@@ -64,8 +64,10 @@ class ProductMasterToolTests(TestCase):
     def setUp(self):
         from apps.core.services.AI.Agents.core import plan_tools as t
         from apps.core.services.AI.Agents.core import master_api, schema_catalog
+        from apps.core.services.AI.Agents.domains.product.attributes import tools as attr_tools
 
         self.t = t
+        self.attr_tools = attr_tools
         self.utils = master_api
         self._original_rows = master_api._rows
         self.fixtures = {
@@ -90,7 +92,7 @@ class ProductMasterToolTests(TestCase):
         self.addCleanup(lambda: setattr(master_api, "_rows", self._original_rows))
 
     def test_build_sql_skips_already_assigned(self):
-        result = self.t.build_category_attribute_assign_sql.invoke(
+        result = self.attr_tools.build_category_attribute_assign_sql.invoke(
             {"category": "Pet Playpens", "attributes": ["material", "color"]}
         )
         data = json.loads(result)
@@ -104,7 +106,7 @@ class ProductMasterToolTests(TestCase):
         self.assertIn("NOT EXISTS", data["sql"])
 
     def test_build_sql_unknown_attribute_reports_candidates(self):
-        result = self.t.build_category_attribute_assign_sql.invoke(
+        result = self.attr_tools.build_category_attribute_assign_sql.invoke(
             {"category": "Pet Playpens", "attributes": ["colr"]}
         )
         data = json.loads(result)
@@ -114,7 +116,7 @@ class ProductMasterToolTests(TestCase):
         self.assertTrue(any(u["attribute"] == "colr" for u in data["unknown"]))
 
     def test_build_sql_missing_category_fails(self):
-        result = self.t.build_category_attribute_assign_sql.invoke(
+        result = self.attr_tools.build_category_attribute_assign_sql.invoke(
             {"category": "Nope", "attributes": ["material"]}
         )
         data = json.loads(result)
@@ -446,7 +448,7 @@ class ProductMasterCommandTests(TestCase):
         self.assertEqual(len(resets), 1)
 
 
-class WorkerSqlGuardrailTests(TestCase):
+class AgentSqlGuardrailTests(TestCase):
     def test_assert_draft_sql_keeps_select_and_allowed_insert(self):
         from apps.core.services.AI.Agents.core import guardrail as base
 
@@ -467,12 +469,12 @@ class WorkerSqlGuardrailTests(TestCase):
         self.assertTrue(any("INSERT outside" in r for r in risks))
 
 
-class ProductNameWorkerTests(TestCase):
+class ProductNameAgentTests(TestCase):
     def test_to_data_url_reads_local_png(self):
         import os
         import tempfile
 
-        from apps.core.services.AI.Agents.domains.product.workers.name import _to_data_url
+        from apps.core.services.AI.Agents.domains.product.naming.tools import _to_data_url
         from PIL import Image
 
         fd, path = tempfile.mkstemp(suffix=".png")
@@ -487,7 +489,7 @@ class ProductNameWorkerTests(TestCase):
     def test_rename_parses_seo_json_without_network(self):
         from langchain_core.messages import AIMessage
 
-        from apps.core.services.AI.Agents.domains.product.workers.name import ProductNameWorker
+        from apps.core.services.AI.Agents.domains.product.naming.manager import ProductNameAgent
 
         class _FakeLLM:
             def invoke(self, messages):
@@ -507,17 +509,17 @@ class ProductNameWorkerTests(TestCase):
                     })
                 )
 
-        result = ProductNameWorker(llm=_FakeLLM()).rename(chinese_name="宠物?��?")
+        result = ProductNameAgent(llm=_FakeLLM()).rename(chinese_name="宠物?��?")
         self.assertTrue(result["ok"])
         self.assertEqual(result["data"]["seo_name"], "Foldable Pet Playpen For Dogs And Cats")
         self.assertEqual(result["sql"], [])  # no product_id -> no product_names SQL
 
 
-class WebResearchWorkerTests(TestCase):
+class WebResearchAgentTests(TestCase):
     def test_research_extracts_fields_and_flags_missing(self):
         from unittest.mock import patch
 
-        from apps.core.services.AI.Agents.domains.product.workers.web_research import WebResearchWorker
+        from apps.core.services.AI.Agents.domains.product.web_research.manager import WebResearchAgent
 
         class _Resp:
             def __init__(self, content):
@@ -532,9 +534,9 @@ class WebResearchWorkerTests(TestCase):
                     "missing_fields": ["price"],
                 }))
 
-        worker = WebResearchWorker(llm=_FakeLLM())
+        worker = WebResearchAgent(llm=_FakeLLM())
         with patch(
-            "apps.core.services.AI.Agents.domains.product.workers.web_research.fetch_text",
+            "apps.core.services.AI.Agents.domains.product.web_research.tools.fetch_text",
             return_value="Dog bed for large breeds. " * 20,
         ):
             result = worker.research(
@@ -545,9 +547,9 @@ class WebResearchWorkerTests(TestCase):
         self.assertIn("price", result["missing_fields"])
 
 
-class ProductAttributesWorkerTests(TestCase):
+class ProductAttributesAgentTests(TestCase):
     def test_guardrail_strips_drop_keeps_assign_insert(self):
-        from apps.core.services.AI.Agents.domains.product.workers.attributes import ProductAttributesWorker
+        from apps.core.services.AI.Agents.domains.product.attributes.manager import ProductAttributesAgent
 
         class _Msg:
             def __init__(self, type_, content):
@@ -577,7 +579,7 @@ class ProductAttributesWorkerTests(TestCase):
                 )
             ]
         }
-        result = ProductAttributesWorker()._parse_result(final)
+        result = ProductAttributesAgent()._parse_result(final)
         statements = [s["statement"] for s in result["sql"]]
         self.assertTrue(any("master_product_category_attribute_assign" in s for s in statements))
         self.assertFalse(any("DROP" in s for s in statements))
@@ -585,10 +587,10 @@ class ProductAttributesWorkerTests(TestCase):
 
 
 class ManagerDelegationTests(TestCase):
-    def test_manager_exposes_worker_tools(self):
+    def test_manager_exposes_subagent_tools(self):
         from apps.core.services.AI.Agents.domains.product import manager as m
 
-        names = {t.name for t in m.WORKER_TOOLS}
+        names = {t.name for t in m.PLAN_TOOLS}
         self.assertTrue(
             {"rename_product_with_seo", "research_product_web",
              "manage_product_attributes"} <= names
@@ -596,7 +598,7 @@ class ManagerDelegationTests(TestCase):
 
     def test_manager_does_not_expose_attribute_builders(self):
         from apps.core.services.AI.Agents.domains.product import manager as m
-        from apps.core.services.AI.Agents.domains.product.workers.attributes import (
+        from apps.core.services.AI.Agents.domains.product.attributes.tools import (
             ATTRIBUTE_TOOLS,
         )
 
@@ -605,12 +607,12 @@ class ManagerDelegationTests(TestCase):
             "build_create_attribute_sql",
             "build_attribute_dropdown_sql",
         }
-        manager_names = {t.name for t in m.WORKER_TOOLS}
-        worker_names = {t.name for t in ATTRIBUTE_TOOLS}
+        manager_names = {t.name for t in m.PLAN_TOOLS}
+        agent_names = {t.name for t in ATTRIBUTE_TOOLS}
 
         self.assertFalse(attribute_builders & manager_names)
         self.assertIn("manage_product_attributes", manager_names)
-        self.assertTrue(attribute_builders <= worker_names)
+        self.assertTrue(attribute_builders <= agent_names)
 
     def test_human_message_includes_images(self):
         from apps.core.services.AI.Agents.domains.product import manager as m
@@ -618,7 +620,7 @@ class ManagerDelegationTests(TestCase):
         msg = m.ProductMasterAgent()._build_human_message("do it", images=["a.png"])
         self.assertIn("a.png", msg)
 
-    def test_collect_worker_results_aggregates_sql(self):
+    def test_collect_agent_results_aggregates_sql(self):
         from apps.core.services.AI.Agents.domains.product import manager as m
 
         class _ToolMsg:
@@ -629,14 +631,14 @@ class ManagerDelegationTests(TestCase):
         result = {
             "messages": [
                 _ToolMsg(json.dumps({
-                    "worker": "product_sql_builder", "ok": True,
+                    "agent": "product_sql_builder", "ok": True,
                     "sql": [{"purpose": "p", "statement": "INSERT INTO product_sale_prices_by_qty ...;"}],
                 }))
             ]
         }
-        worker_results, drafts = m.ProductMasterAgent._collect_worker_results(result)
-        self.assertEqual(len(worker_results), 1)
-        self.assertEqual(drafts[0]["worker"], "product_sql_builder")
+        agent_results, drafts = m.ProductMasterAgent._collect_agent_results(result)
+        self.assertEqual(len(agent_results), 1)
+        self.assertEqual(drafts[0]["agent"], "product_sql_builder")
         self.assertIn("product_sale_prices_by_qty", drafts[0]["statement"])
 
 
@@ -962,7 +964,7 @@ class ActModeTests(TestCase):
     def test_agent_mode_selects_tools(self):
         from apps.core.services.AI.Agents.domains.product import manager as m
 
-        plan_names = {t.name for t in m.WORKER_TOOLS}
+        plan_names = {t.name for t in m.PLAN_TOOLS}
         act_names = {t.name for t in m.ACT_TOOLS}
         self.assertIn("execute_update_query", act_names)
         self.assertIn("execute_delete_query", act_names)
@@ -1309,7 +1311,7 @@ class SchemaCatalogTests(TestCase):
         self.assertIn("-> master_categories.id", text)
 
 
-class SqlBuilderWorkerTests(TestCase):
+class SqlBuilderAgentTests(TestCase):
     @staticmethod
     def _ai_message(content):
         class _Ai:
@@ -1331,11 +1333,11 @@ class SqlBuilderWorkerTests(TestCase):
         return _Tool(content)
 
     def test_parse_result_keeps_select_strips_write(self):
-        from apps.core.services.AI.Agents.domains.product.workers.sql_builder import (
-            ProductSqlBuilderWorker,
+        from apps.core.services.AI.Agents.domains.product.sql.manager import (
+            ProductSqlAgent,
         )
 
-        worker = ProductSqlBuilderWorker.__new__(ProductSqlBuilderWorker)
+        worker = ProductSqlAgent.__new__(ProductSqlAgent)
         payload = {
             "answer": "3 categories",
             "summary": "anti-join",
@@ -1354,11 +1356,11 @@ class SqlBuilderWorkerTests(TestCase):
         self.assertTrue(any("UPDATE" in r for r in result["risks"]))
 
     def test_parse_result_collects_executed_queries(self):
-        from apps.core.services.AI.Agents.domains.product.workers.sql_builder import (
-            ProductSqlBuilderWorker,
+        from apps.core.services.AI.Agents.domains.product.sql.manager import (
+            ProductSqlAgent,
         )
 
-        worker = ProductSqlBuilderWorker.__new__(ProductSqlBuilderWorker)
+        worker = ProductSqlAgent.__new__(ProductSqlAgent)
         query_json = json.dumps({"ok": True, "query": "SELECT 1", "rowCount": 1, "rows": [{"1": 1}]})
         payload = {
             "answer": "one row",
@@ -1375,11 +1377,11 @@ class SqlBuilderWorkerTests(TestCase):
         self.assertEqual(result["queries"][0]["rowCount"], 1)
 
     def test_parse_result_flags_non_executable_table(self):
-        from apps.core.services.AI.Agents.domains.product.workers.sql_builder import (
-            ProductSqlBuilderWorker,
+        from apps.core.services.AI.Agents.domains.product.sql.manager import (
+            ProductSqlAgent,
         )
 
-        worker = ProductSqlBuilderWorker.__new__(ProductSqlBuilderWorker)
+        worker = ProductSqlAgent.__new__(ProductSqlAgent)
         payload = {
             "answer": "a",
             "summary": "s",
@@ -1390,17 +1392,17 @@ class SqlBuilderWorkerTests(TestCase):
         self.assertTrue(any("outside AI_QUERY_TABLES" in m for m in result["missing_data"]))
 
     def test_parse_result_without_json_reports_error(self):
-        from apps.core.services.AI.Agents.domains.product.workers.sql_builder import (
-            ProductSqlBuilderWorker,
+        from apps.core.services.AI.Agents.domains.product.sql.manager import (
+            ProductSqlAgent,
         )
 
-        worker = ProductSqlBuilderWorker.__new__(ProductSqlBuilderWorker)
+        worker = ProductSqlAgent.__new__(ProductSqlAgent)
         result = worker._parse_result({"messages": [self._ai_message("just some prose, no JSON here")]})
         self.assertFalse(result["ok"])
         self.assertIn("error", result)
 
     def test_tables_in_sql_extracts_from_and_join(self):
-        from apps.core.services.AI.Agents.domains.product.workers.sql_builder import _tables_in_sql
+        from apps.core.services.AI.Agents.domains.product.sql.manager import _tables_in_sql
 
         tables = _tables_in_sql(
             "SELECT c.name FROM master_categories c "
@@ -1411,39 +1413,41 @@ class SqlBuilderWorkerTests(TestCase):
     def test_build_product_sql_tool_is_registered(self):
         from apps.core.services.AI.Agents.domains.product import manager as m
 
-        names = {t.name for t in m._MANAGER_WORKER_TOOLS}
+        names = {t.name for t in m.PLAN_TOOLS}
         self.assertIn("build_product_sql", names)
 
 
-class WorkerGraphTests(TestCase):
+class AgentGraphTests(TestCase):
     """Offline tests for the workers' explicit LangGraph loop (no LLM/network)."""
 
-    def test_attributes_worker_graph_has_model_and_tools_nodes(self):
-        from apps.core.services.AI.Agents.domains.product.workers.attributes import (
-            ProductAttributesWorker,
+    def test_attributes_agent_graph_has_model_and_tools_nodes(self):
+        from apps.core.services.AI.Agents.domains.product.attributes.manager import (
+            ProductAttributesAgent,
         )
 
-        graph = ProductAttributesWorker()._get_agent()
+        graph = ProductAttributesAgent()._get_agent()
         nodes = set(graph.get_graph().nodes.keys())
         self.assertIn("model", nodes)
         self.assertIn("tools", nodes)
 
-    def test_sql_builder_worker_graph_has_model_and_tools_nodes(self):
-        from apps.core.services.AI.Agents.domains.product.workers.sql_builder import (
-            ProductSqlBuilderWorker,
+    def test_sql_builder_agent_graph_has_model_and_tools_nodes(self):
+        from apps.core.services.AI.Agents.domains.product.sql.manager import (
+            ProductSqlAgent,
         )
 
-        graph = ProductSqlBuilderWorker()._get_agent()
+        graph = ProductSqlAgent()._get_agent()
         nodes = set(graph.get_graph().nodes.keys())
         self.assertIn("model", nodes)
         self.assertIn("tools", nodes)
 
-    def test_attributes_worker_injects_system_prompt(self):
+    def test_attributes_agent_injects_system_prompt(self):
         from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
-        from apps.core.services.AI.Agents.domains.product.workers.attributes import (
+        from apps.core.services.AI.Agents.domains.product.attributes.prompts import (
             ATTRIBUTE_SYSTEM_PROMPT,
-            ProductAttributesWorker,
+        )
+        from apps.core.services.AI.Agents.domains.product.attributes.manager import (
+            ProductAttributesAgent,
         )
 
         captured = []
@@ -1457,7 +1461,7 @@ class WorkerGraphTests(TestCase):
             def bind_tools(self, tools):
                 return _Bound()
 
-        worker = ProductAttributesWorker(llm=_FakeLLM())
+        worker = ProductAttributesAgent(llm=_FakeLLM())
         state = worker._get_agent().invoke(
             {"messages": [HumanMessage(content="create a color attribute")]}
         )
@@ -1469,13 +1473,13 @@ class WorkerGraphTests(TestCase):
             any(isinstance(m, SystemMessage) for m in state["messages"])
         )
 
-    def test_sql_builder_worker_injects_system_prompt(self):
+    def test_sql_builder_agent_injects_system_prompt(self):
         from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
-        from apps.core.services.AI.Agents.domains.product.workers.sql_builder import (
-            ProductSqlBuilderWorker,
-            _system_prompt,
+        from apps.core.services.AI.Agents.domains.product.sql.manager import (
+            ProductSqlAgent,
         )
+        from apps.core.services.AI.Agents.domains.product.sql.prompts import _system_prompt
 
         captured = []
 
@@ -1488,7 +1492,7 @@ class WorkerGraphTests(TestCase):
             def bind_tools(self, tools):
                 return _Bound()
 
-        worker = ProductSqlBuilderWorker(llm=_FakeLLM())
+        worker = ProductSqlAgent(llm=_FakeLLM())
         state = worker._get_agent().invoke(
             {"messages": [HumanMessage(content="how many categories?")]}
         )
@@ -1501,14 +1505,14 @@ class WorkerGraphTests(TestCase):
             any(isinstance(m, SystemMessage) for m in state["messages"])
         )
 
-    def test_sql_builder_worker_parses_tool_messages(self):
+    def test_sql_builder_agent_parses_tool_messages(self):
         # The graph's ToolNode writes type="tool" messages; _parse_result's
         # query collection must keep reading them after the create_agent swap.
-        from apps.core.services.AI.Agents.domains.product.workers.sql_builder import (
-            ProductSqlBuilderWorker,
+        from apps.core.services.AI.Agents.domains.product.sql.manager import (
+            ProductSqlAgent,
         )
 
-        worker = ProductSqlBuilderWorker.__new__(ProductSqlBuilderWorker)
+        worker = ProductSqlAgent.__new__(ProductSqlAgent)
 
         class _Tool:
             type = "tool"
@@ -1539,26 +1543,28 @@ class WorkerGraphTests(TestCase):
 
 
 
-    def test_name_worker_graph_has_single_model_node(self):
-        from apps.core.services.AI.Agents.domains.product.workers.name import (
-            ProductNameWorker,
+    def test_name_agent_graph_has_single_model_node(self):
+        from apps.core.services.AI.Agents.domains.product.naming.manager import (
+            ProductNameAgent,
         )
 
         class _NoopLLM:
             pass
 
-        graph = ProductNameWorker(llm=_NoopLLM())._get_agent()
+        graph = ProductNameAgent(llm=_NoopLLM())._get_agent()
         nodes = set(graph.get_graph().nodes.keys())
         self.assertEqual(nodes, {"__start__", "model", "__end__"})
         self.assertNotIn("tools", nodes)
         self.assertEqual(len(graph.get_graph().edges), 2)
 
-    def test_name_worker_injects_system_prompt(self):
+    def test_name_agent_injects_system_prompt(self):
         from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
-        from apps.core.services.AI.Agents.domains.product.workers.name import (
+        from apps.core.services.AI.Agents.domains.product.naming.prompts import (
             NAME_SYSTEM_PROMPT,
-            ProductNameWorker,
+        )
+        from apps.core.services.AI.Agents.domains.product.naming.manager import (
+            ProductNameAgent,
         )
 
         captured = []
@@ -1568,7 +1574,7 @@ class WorkerGraphTests(TestCase):
                 captured.append(list(messages))
                 return AIMessage(content='{"seo_name": "Dog Bed"}')
 
-        worker = ProductNameWorker(llm=_FakeLLM())
+        worker = ProductNameAgent(llm=_FakeLLM())
         state = worker._get_agent().invoke(
             {"messages": [HumanMessage(content="宠物窝")]}
         )
@@ -1679,7 +1685,7 @@ class ManagerGeneralTests(TestCase):
             ],
             "drafts": [
                 {
-                    "worker": "product_sql_builder",
+                    "agent": "product_sql_builder",
                     "purpose": "insert category",
                     "statement": "INSERT INTO master_categories (name) VALUES ('x')",
                 }
@@ -1719,7 +1725,7 @@ class ManagerGeneralTests(TestCase):
         self.assertIn("Summary: two", mem.history()[3][1])
         self.assertIn("Human request: second question", mem.history()[3][1])
 
-    def test_render_turn_falls_back_to_worker_results(self):
+    def test_render_turn_falls_back_to_agent_results(self):
         from apps.core.services.AI.Agents.core.memory import render_turn
 
         plan = {
@@ -1733,14 +1739,14 @@ class ManagerGeneralTests(TestCase):
             "risks": [
                 "The model produced no structured reply and no executed SELECT rows were available."
             ],
-            "worker_results": [
+            "agent_results": [
                 {
-                    "worker": "unknown",
+                    "agent": "unknown",
                     "ok": False,
                     "error": "Table not allowed for reading: master_product_attribute_assignments",
                 },
                 {
-                    "worker": "product_sql_builder",
+                    "agent": "product_sql_builder",
                     "ok": True,
                     "summary": "SELECT query finds all product categories with no attribute assignments.",
                     "answer": "Found 2 product categories with no attributes:\n\n1. Baby Crib\n2. Bowl",
@@ -1785,9 +1791,9 @@ class ManagerGeneralTests(TestCase):
         from apps.core.services.AI.Agents.core.memory import render_turn
 
         plan = {
-            "worker_results": [
+            "agent_results": [
                 {
-                    "worker": "product_sql_builder",
+                    "agent": "product_sql_builder",
                     "ok": True,
                     "answer": "Found 62 product categories.",
                     "queries": [
@@ -1817,9 +1823,9 @@ class ManagerGeneralTests(TestCase):
         plan = {
             "missing_data": ["dup"],
             "risks": ["risk dup"],
-            "worker_results": [
+            "agent_results": [
                 {
-                    "worker": "w",
+                    "agent": "w",
                     "ok": True,
                     "missing_data": ["dup", "unique"],
                     "risks": ["risk dup"],
@@ -2012,12 +2018,12 @@ class GuardrailTests(TestCase):
         self.assertTrue(decision.ok)
 
 
-class WorkerResultContractTests(TestCase):
+class AgentResultContractTests(TestCase):
     def test_roundtrip_preserves_extra_fields(self):
-        from apps.core.services.AI.Agents.core.contracts import WorkerResult
+        from apps.core.services.AI.Agents.core.contracts import AgentResult
 
         payload = {
-            "worker": "product_sql_builder",
+            "agent": "product_sql_builder",
             "ok": True,
             "summary": "s",
             "data": {"tiers": [{"min_qty": 10, "sale_price": 1.0}]},
@@ -2025,12 +2031,12 @@ class WorkerResultContractTests(TestCase):
             "missing_data": [],
             "risks": [],
         }
-        parsed = WorkerResult.from_tool_content(payload)
+        parsed = AgentResult.from_tool_content(payload)
         self.assertIsNotNone(parsed)
-        self.assertEqual(parsed.worker, "product_sql_builder")
+        self.assertEqual(parsed.agent, "product_sql_builder")
         self.assertEqual(parsed.data["tiers"][0]["min_qty"], 10)
 
-    def test_failure_envelope_without_worker_is_surfaced(self):
+    def test_failure_envelope_without_agent_is_surfaced(self):
         # A bare error envelope (no "worker" key) must still be collected.
         from apps.core.services.AI.Agents.core.engine import DomainManagerAgent
 
@@ -2038,12 +2044,12 @@ class WorkerResultContractTests(TestCase):
             type = "tool"
             content = json.dumps({"ok": False, "error": "boom"})
 
-        worker_results, _ = DomainManagerAgent._collect_worker_results(
+        agent_results, _ = DomainManagerAgent._collect_agent_results(
             {"messages": [_Msg()]}
         )
-        self.assertEqual(len(worker_results), 1)
-        self.assertFalse(worker_results[0]["ok"])
-        self.assertEqual(worker_results[0]["worker"], "unknown")
+        self.assertEqual(len(agent_results), 1)
+        self.assertFalse(agent_results[0]["ok"])
+        self.assertEqual(agent_results[0]["agent"], "unknown")
 
 
 class PlanStoreTests(TestCase):
@@ -2072,17 +2078,17 @@ class ToolSchemaTests(TestCase):
         from unittest.mock import patch
 
         from apps.core.services.AI.Agents.domains.sales.tools import build_sales_sql
-        from apps.core.services.AI.Agents.domains.product.workers.sql_builder import ProductSqlBuilderWorker
+        from apps.core.services.AI.Agents.domains.product.sql.manager import ProductSqlAgent
 
         seen = {}
 
         def fake_plan(self, question, tables=None, execute=True):
             seen["tables"] = tables
             seen["execute"] = execute
-            return {"worker": "sales_sql_builder", "ok": True, "sql": [],
+            return {"agent": "sales_sql_builder", "ok": True, "sql": [],
                     "summary": "ok", "missing_data": [], "risks": []}
 
-        with patch.object(ProductSqlBuilderWorker, "plan", fake_plan):
+        with patch.object(ProductSqlAgent, "plan", fake_plan):
             build_sales_sql.invoke(
                 {"question": "q", "tables": "sales_quotations, master_currencies",
                  "execute": "false"}

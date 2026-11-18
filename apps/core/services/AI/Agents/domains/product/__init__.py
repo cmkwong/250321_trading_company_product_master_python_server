@@ -1,7 +1,7 @@
-"""Product-master domain: manager, prompts, tools and specialist workers.
+"""Product-master domain: manager plus specialist sub-agents.
 
 Import concrete modules directly (``domains.product.manager``,
-``domains.product.workers.sql_builder``, ...); no eager imports here so that
-``domains.product.manager`` may import workers without a cycle.
+``domains.product.sql.manager``, ...); no eager imports here so that
+``domains.product.manager`` may import sub-agents without a cycle.
 """
 

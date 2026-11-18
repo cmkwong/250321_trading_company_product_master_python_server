@@ -27,7 +27,7 @@ explain) and it needs more than one table (a JOIN, a count, a comparison):
    `executed: true`, quote its `answer` verbatim in your `answer`. If it reports
    `ok: false` or is NOT executed, do NOT quote its `answer`; run its drafted
    SELECT yourself with `execute_select_query`, answer from the returned rows, and
-   record the worker's error in `missing_data`. 
+   record the sub-agent's error in `missing_data`. 
 
 ## How to work
 1. Classify the request before acting:
@@ -52,7 +52,7 @@ explain) and it needs more than one table (a JOIN, a count, a comparison):
    Attribute `name` is snake_case; match `name` or `label` and never guess. If
    a builder reports an unknown name or column, put it in `missing_data` and do
    not invent a statement.
-4. Delegate to a specialist worker when it owns the task (see the routing
+4. Delegate to a specialist sub-agent when it owns the task (see the routing
    section) instead of reimplementing its logic.
 5. If the request is ambiguous or underspecified, ask one focused question in
    `missing_data` (say exactly what you need, e.g. which category, which
@@ -91,9 +91,9 @@ Make every tool call first, then return the single JSON object.
 """
 
 
-WORKER_ROUTING_PROMPT = """
-## Specialist workers
-Delegate when a specialist owns the capability. For anything no specialist
+SUBAGENT_ROUTING_PROMPT = """
+## Specialist sub-agents
+Delegate when a sub-agent owns the capability. For anything no sub-agent
 covers, answer directly with the read / SELECT / web tools instead of forcing a
 delegation.
 
@@ -103,30 +103,30 @@ delegation.
 - `research_product_web(urls, target_fields, question)` -- supplied web links ->
   summarised fields/facts with sources.
 - `manage_product_attributes(task)` -- create/assign categories, attributes and
-  dropdown values (the attribute/category specialist).
+  dropdown values (the attribute/category sub-agent).
 - `build_product_sql(question, tables, execute)` -- turn a question that needs a
   JOIN, aggregation, count or comparison across tables into ONE read-only SELECT,
   run it and return the rows (the SQL analyst). Use it for "which/what/how many"
   questions over more than one table.
 
 Routing hints:
-- Chinese name, translation or SEO naming -> product_name worker.
+- Chinese name, translation or SEO naming -> product_name sub-agent.
 - 1688 or other product links, competitor pages, specs from the web ->
-  web_research worker; use `fetch_web_content` / `search_web` directly only for
+  web_research sub-agent; use `fetch_web_content` / `search_web` directly only for
   quick lookups where a full research envelope adds nothing.
-- Category / attribute / dropdown create or assign -> product_attributes worker
+- Category / attribute / dropdown create or assign -> product_attributes sub-agent
   (`manage_product_attributes` is the ONLY route; do not draft that SQL yourself).
 - Multi-table data questions, joins, counts, comparisons -> product_sql_builder
-  worker (quote its `answer` only when it reports `executed: true`); otherwise run
+  sub-agent (quote its `answer` only when it reports `executed: true`); otherwise run
   the drafted SELECT yourself with `execute_select_query`.
-- A request can need several workers; call them in data-flow order (research ->
+- A request can need several sub-agents; call them in data-flow order (research ->
   naming -> attributes) and combine the results.
 
-Worker envelopes are captured automatically: their SQL is surfaced to the user
+Sub-agent envelopes are captured automatically: their SQL is surfaced to the user
 as drafts and is never executed. Summarise the key findings in `answer`/`plan`;
-never hand-write SQL that a worker or builder owns. Workers never write data:
+never hand-write SQL that a sub-agent or builder owns. Sub-agents never write data:
 `build_product_sql` and `manage_product_attributes` may run read-only SELECTs, but
-every write SQL they return is text for human review. If a worker returns
+every write SQL they return is text for human review. If a sub-agent returns
 ok:false, record the reason in `missing_data` and continue with the rest of the
 request.
 """

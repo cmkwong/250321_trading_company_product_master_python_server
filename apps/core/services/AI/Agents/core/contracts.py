@@ -1,10 +1,10 @@
 """Shared data contracts for the AI agents.
 
-This is the single home for the plan and worker-result shapes.  Workers return
-``WorkerResult`` (validated to a JSON string at the tool boundary); the turn
-engine parses tool messages through the same model so a failed worker is never
-silently dropped, and the ``/plan``-``/act`` flow signs a plan with a content
-hash so ``/act`` can only run what a human already reviewed.
+This is the single home for the plan and sub-agent result shapes.  Sub-agents
+return ``AgentResult`` (validated to a JSON string at the tool boundary); the
+turn engine parses tool messages through the same model so a failed sub-agent
+is never silently dropped, and the ``/plan``-``/act`` flow signs a plan with a
+content hash so ``/act`` can only run what a human already reviewed.
 """
 
 from __future__ import annotations
@@ -16,21 +16,28 @@ from typing import Any, Dict, List, Optional
 from pydantic import BaseModel, ConfigDict, Field
 
 
-class SqlStep(BaseModel):
+class SqlDraft(BaseModel):
+    purpose: str = Field(default="", description="What this statement does")
+    statement: str = Field(
+        default="",
+        description="One MySQL statement copied verbatim from a build_* tool",
+    )
+    verification: str = Field(
+        default="", description="Verification query from the build_* tool"
+    )
+
+
+class SqlStep(SqlDraft):
     """One SQL statement plus its intent and verification."""
 
     model_config = ConfigDict(extra="allow")
-
-    purpose: str = ""
-    statement: str = ""
-    verification: str = ""
-    worker: Optional[str] = None
+    agent: Optional[str] = None
 
 
-class WorkerResult(BaseModel):
-    """The one result contract every worker tool returns.
+class AgentResult(BaseModel):
+    """The one result contract every sub-agent tool returns.
 
-    ``extra="allow"`` preserves worker-specific payload fields (``data``,
+    ``extra="allow"`` preserves sub-agent-specific payload fields (``data``,
     ``answer``, ``tables_used``, ``queries``, ``executed``, ``needs_confirmation``,
     ``route``, ...) so existing callers and tests keep working while the core
     fields stay uniform.
@@ -38,7 +45,7 @@ class WorkerResult(BaseModel):
 
     model_config = ConfigDict(extra="allow")
 
-    worker: str
+    agent: str
     ok: bool = True
     summary: str = ""
     answer: str = ""
@@ -49,12 +56,12 @@ class WorkerResult(BaseModel):
     hint: Optional[str] = None
 
     @classmethod
-    def success(cls, worker: str, **fields: Any) -> "WorkerResult":
-        return cls(worker=worker, ok=True, **fields)
+    def success(cls, agent: str, **fields: Any) -> "AgentResult":
+        return cls(agent=agent, ok=True, **fields)
 
     @classmethod
-    def failure(cls, worker: str, error: str, **fields: Any) -> "WorkerResult":
-        return cls(worker=worker, ok=False, error=error, **fields)
+    def failure(cls, agent: str, error: str, **fields: Any) -> "AgentResult":
+        return cls(agent=agent, ok=False, error=error, **fields)
 
     def to_json(self) -> str:
         return self.model_dump_json(exclude_none=True)
@@ -63,7 +70,7 @@ class WorkerResult(BaseModel):
         return self.model_dump(exclude_none=True)
 
     # Dict-style access kept for backward compatibility with existing callers
-    # and tests that subscript worker results (``result["ok"]``).
+    # and tests that subscript agent results (``result["ok"]``).
     def __getitem__(self, key: str) -> Any:
         return self.model_dump(exclude_none=True)[key]
 
@@ -71,11 +78,12 @@ class WorkerResult(BaseModel):
         return self.model_dump(exclude_none=True).get(key, default)
 
     @classmethod
-    def from_tool_content(cls, content: Any) -> Optional["WorkerResult"]:
-        """Parse a tool message's content into a WorkerResult, or None.
+    def from_tool_content(cls, content: Any) -> Optional["AgentResult"]:
+        """Parse a tool message's content into an AgentResult, or None.
 
         Accepts a dict, a JSON string, or free-form text with an embedded JSON
-        object (the models sometimes wrap the envelope in prose).
+        object (the models sometimes wrap the envelope in prose).  Accepts the
+        legacy ``worker`` key for one release while callers migrate to ``agent``.
         """
         data: Any = None
         if isinstance(content, dict):
@@ -90,8 +98,10 @@ class WorkerResult(BaseModel):
             data = _extract_json_block(text)
         if not isinstance(data, dict):
             return None
-        if not data.get("worker"):
+        if not data.get("agent") and not data.get("worker"):
             return None
+        if "agent" not in data and "worker" in data:
+            data = {**data, "agent": data["worker"]}
         try:
             return cls.model_validate(data)
         except Exception:  # noqa: BLE001 - tolerate a malformed envelope
@@ -114,7 +124,7 @@ class Plan(BaseModel):
     drafts: List[SqlStep] = Field(default_factory=list)
     missing_data: List[str] = Field(default_factory=list)
     risks: List[str] = Field(default_factory=list)
-    worker_results: List[Dict[str, Any]] = Field(default_factory=list)
+    agent_results: List[Dict[str, Any]] = Field(default_factory=list)
     skipped_sql: List[Dict[str, Any]] = Field(default_factory=list)
 
     def to_dict(self) -> Dict[str, Any]:
@@ -140,17 +150,19 @@ def _extract_json_block(text: str) -> Optional[Dict[str, Any]]:
 
 
 # ``extract_json_block`` is the public name; ``_extract_json_block`` is kept as
-# a backward-compatible alias for ``WorkerResult.from_tool_content``.
+# a backward-compatible alias for ``AgentResult.from_tool_content``.
 extract_json_block = _extract_json_block
 
 
+# Convert raw values into a list of dicts, filtering out non-dict items.
 def as_dict_list(value: Any) -> List[Dict[str, Any]]:
-    """Keep only dict items from a raw list (worker-results / plan fields)."""
+    """Keep only dict items from a raw list (agent-results / plan fields)."""
     if not isinstance(value, list):
         return []
     return [item for item in value if isinstance(item, dict)]
 
 
+# Convert raw values into a list of strings, filtering out None and empty strings.
 def as_str_list(value: Any) -> List[str]:
     """Coerce a raw list into a clean list of non-empty strings."""
     if not isinstance(value, list):
@@ -158,36 +170,41 @@ def as_str_list(value: Any) -> List[str]:
     return [str(item) for item in value if item not in (None, "")]
 
 
+# Convert raw SQL steps into a structured list of dicts with purpose, statement, and verification.
 def as_sql_list(value: Any) -> List[Dict[str, str]]:
-    """Coerce raw plan/worker SQL into a list of {purpose, statement, verification}."""
+    """Coerce raw plan/sub-agent SQL into a list of {purpose, statement, verification}."""
     if not isinstance(value, list):
         return []
     steps: List[Dict[str, str]] = []
     for item in value:
-        if isinstance(item, str):
-            steps.append({"purpose": "", "statement": item, "verification": ""})
+        if isinstance(item, SqlStep):
+            step = item
+        elif isinstance(item, str):
+            step = SqlStep(statement=item)
         elif isinstance(item, dict):
-            steps.append(
-                {
-                    "purpose": str(item.get("purpose", "")),
-                    "statement": str(item.get("statement", "")),
-                    "verification": str(item.get("verification", "")),
-                }
+            step = SqlStep(
+                purpose=str(item.get("purpose", "") or ""),
+                statement=str(item.get("statement", "") or ""),
+                verification=str(item.get("verification", "") or ""),
             )
+        else:
+            continue
+        steps.append(step.model_dump(include={"purpose", "statement", "verification"}))
     return steps
 
 
-def dump_worker_result(payload: Any) -> str:
-    """Validate a worker payload against ``WorkerResult`` and dump it to JSON.
+def dump_agent_result(payload: Any) -> str:
+    """Validate a sub-agent payload against ``AgentResult`` and dump it to JSON.
 
-    Every worker ``@tool`` returns this string, so the manager has one code path
-    for collecting results, surfacing failures and building drafts.
+    Every sub-agent ``@tool`` returns this string, so the manager has one code
+    path for collecting results, surfacing failures and building drafts.
     """
-    if isinstance(payload, WorkerResult):
+    if isinstance(payload, AgentResult):
         return payload.to_json()
-    return WorkerResult.model_validate(payload).to_json()
+    return AgentResult.model_validate(payload).to_json()
 
 
+# Compute a canonical digest for a plan, ignoring cosmetic changes.
 def canonical_digest(plan: Any, *, mode: Optional[str] = None) -> str:
     """Content hash over the executable part of a plan.
 
@@ -204,18 +221,9 @@ def canonical_digest(plan: Any, *, mode: Optional[str] = None) -> str:
     else:
         payload = {}
 
-    def _step(s: Any) -> Dict[str, Any]:
-        if isinstance(s, dict):
-            return {
-                "purpose": str(s.get("purpose", "")),
-                "statement": str(s.get("statement", "")),
-                "verification": str(s.get("verification", "")),
-            }
-        return {"purpose": "", "statement": str(s), "verification": ""}
-
     canonical = {
-        "sql": [_step(s) for s in payload.get("sql", []) or []],
-        "drafts": [_step(s) for s in payload.get("drafts", []) or []],
+        "sql": as_sql_list(payload.get("sql")),
+        "drafts": as_sql_list(payload.get("drafts")),
     }
     encoded = json.dumps(
         canonical, ensure_ascii=False, sort_keys=True, separators=(",", ":")

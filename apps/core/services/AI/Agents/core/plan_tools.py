@@ -1,10 +1,14 @@
-"""Planning / read-only tools for the product-master agent (``/plan`` mode).
+"""Planning / read-only tools shared across domain managers (``/plan`` mode).
 
-These tools read the product-master database (via the Node server) or the
-server's schema modules on disk, draft write SQL as *text* for human review,
-run read-only SELECT queries, and fetch/search the web.  Nothing here writes
-data -- every INSERT/UPDATE the tools draft is returned as text to be executed
-later via ``/act`` mode (:mod:`Agents.core.act_tools`).
+These generic tools read the master/product-master database (via the Node
+server) or the server's schema modules on disk, draft write SQL as *text* for
+human review, run read-only SELECT queries, and fetch/search the web.  Nothing
+here writes data -- every INSERT/UPDATE the tools draft is returned as text to
+be executed later via ``/act`` mode (:mod:`Agents.core.act_tools`).
+
+Domain-specific tools (attribute readers/builders, the SQL ``describe_tables``
+helper, etc.) live with their sub-agent packages under
+:mod:`Agents.domains.product`.
 """
 
 from __future__ import annotations
@@ -80,124 +84,6 @@ def fetch_master_rows(table_name: str, limit: int = 100) -> str:
 
 
 @tool
-def fetch_category_tree() -> str:
-    """Fetch every master_categories row and render it as an indented tree with ids."""
-    try:
-        rows = master_api._rows("master_categories")
-    except MasterApiError as exc:
-        return _tool_error(exc)
-
-    by_id: Dict[str, Dict[str, Any]] = {str(r.get("id")): r for r in rows}
-    depth_cache: Dict[str, int] = {}
-
-    def depth(node: Dict[str, Any]) -> int:
-        nid = str(node.get("id"))
-        if nid in depth_cache:
-            return depth_cache[nid]
-        d = 0
-        seen = {nid}
-        cur = node
-        while cur.get("parent_id"):
-            pid = str(cur.get("parent_id"))
-            if pid not in by_id or pid in seen:
-                break
-            seen.add(pid)
-            cur = by_id[pid]
-            d += 1
-        depth_cache[nid] = d
-        return d
-
-    lines = []
-    for row in sorted(rows, key=lambda r: str(r.get("name", "")).lower()):
-        indent = "  " * depth(row)
-        lines.append(f"{indent}{row.get('name')}")
-    return json.dumps(
-        {"ok": True, "count": len(rows), "tree": lines}, ensure_ascii=False
-    )
-
-
-@tool
-def fetch_attribute_catalog() -> str:
-    """Fetch every master_product_attributes row (name, label, multiple_selection, id)."""
-    try:
-        rows = master_api._rows("master_product_attributes")
-    except MasterApiError as exc:
-        return _tool_error(exc)
-
-    lines = []
-    for row in sorted(rows, key=lambda r: str(r.get("name", "")).lower()):
-        lines.append(
-            f"{row.get('name')} | label={row.get('label') or ''}"
-            f" | multiple={bool(row.get('multiple_selection'))}"
-        )
-    return json.dumps(
-        {"ok": True, "count": len(rows), "attributes": lines}, ensure_ascii=False
-    )
-
-
-@tool
-def fetch_attribute_assignments(category: str, summarize: bool = False) -> str:
-    """List attributes already assigned to a category (by name or id). Pass summarize=True for a compact list of names."""
-    try:
-        categories = master_api._rows("master_categories")
-        cat, candidates = master_api._resolve(categories, "id", "name", category)
-        if cat is None:
-            return json.dumps(
-                {
-                    "ok": False,
-                    "error": f"category not found: {category!r}",
-                    "candidates": candidates,
-                },
-                ensure_ascii=False,
-            )
-
-        assigns = master_api._rows("master_product_category_attribute_assign")
-        attributes = master_api._rows("master_product_attributes")
-        attr_by_id = {str(a.get("id")): a for a in attributes}
-
-        cat_assigns = [
-            a for a in assigns if str(a.get("category_id")) == str(cat.get("id"))
-        ]
-
-        resolved = []
-        for a in cat_assigns:
-            attr = attr_by_id.get(str(a.get("attribute_id")), {})
-            resolved.append(
-                {
-                    "attribute_name": attr.get("name", "?"),
-                    "attribute_id": a.get("attribute_id"),
-                }
-            )
-    except MasterApiError as exc:
-        return _tool_error(exc)
-
-    if summarize:
-        names = sorted({r["attribute_name"] for r in resolved})
-        return json.dumps(
-            {
-                "ok": True,
-                "category": cat.get("name"),
-                "category_id": cat.get("id"),
-                "assigned_attributes": names,
-                "count": len(names),
-            },
-            ensure_ascii=False,
-        )
-
-    resolved.sort(key=lambda r: r["attribute_name"])
-    return json.dumps(
-        {
-            "ok": True,
-            "category": cat.get("name"),
-            "category_id": cat.get("id"),
-            "assignments": resolved,
-            "count": len(resolved),
-        },
-        ensure_ascii=False,
-    )
-
-
-@tool
 def read_master_schema_file(file_name: str) -> str:
     """Read a schema module (e.g. master.js, products.js) from the Node server's table_schema folder."""
     try:
@@ -246,241 +132,6 @@ def read_table_definition(table_name: str) -> str:
     return json.dumps(
         {"ok": True, "table": table_name, "fields": fields}, ensure_ascii=False
     )
-
-
-@tool
-def build_category_attribute_assign_sql(category: str, attributes: List[str]) -> str:
-    """Build an idempotent MySQL INSERT..SELECT assigning attribute names to a category (name or id). Resolves ids, skips already-assigned pairs, and returns SQL plus verification statements. Read-only: nothing is executed."""
-    try:
-        categories = master_api._rows("master_categories")
-        all_attrs = master_api._rows("master_product_attributes")
-
-        cat, cat_candidates = master_api._resolve(categories, "id", "name", category)
-        if cat is None:
-            return json.dumps(
-                {
-                    "ok": False,
-                    "error": f"category not found: {category!r}",
-                    "candidates": cat_candidates,
-                },
-                ensure_ascii=False,
-            )
-
-        matched = []
-        unknown = []
-        for raw in attributes or []:
-            target = str(raw).strip()
-            if not target:
-                continue
-            match, candidates = master_api._resolve(all_attrs, "id", "name", target)
-            if match is not None:
-                matched.append(match)
-            else:
-                unknown.append({"attribute": target, "candidates": candidates})
-
-        if not matched:
-            return json.dumps(
-                {
-                    "ok": False,
-                    "error": "no attributes resolved",
-                    "category": cat.get("name"),
-                    "unknown": unknown,
-                },
-                ensure_ascii=False,
-            )
-
-        assigns = master_api._rows("master_product_category_attribute_assign")
-        existing_ids = {
-            str(a.get("attribute_id"))
-            for a in assigns
-            if str(a.get("category_id")) == str(cat.get("id"))
-        }
-
-        already = [a["name"] for a in matched if str(a.get("id")) in existing_ids]
-        to_add = [a for a in matched if str(a.get("id")) not in existing_ids]
-
-        cat_id = sqlguard._sql_literal(cat.get("id"))
-        names_lit = ", ".join(sqlguard._sql_literal(a["name"]) for a in to_add)
-        ids_lit = ", ".join(sqlguard._sql_literal(a["id"]) for a in to_add)
-
-        if to_add:
-            sql = (
-                "INSERT INTO master_product_category_attribute_assign "
-                "(id, category_id, attribute_id)\n"
-                "SELECT UUID(), c.id, a.id\n"
-                "FROM master_categories AS c\n"
-                "JOIN master_product_attributes AS a ON a.name IN (" + names_lit + ")\n"
-                "WHERE c.id = " + cat_id + "\n"
-                "  AND NOT EXISTS (\n"
-                "    SELECT 1 FROM master_product_category_attribute_assign AS x\n"
-                "    WHERE x.category_id = c.id AND x.attribute_id = a.id\n"
-                "  );"
-            )
-            verification_before = (
-                "SELECT a.name AS attribute_name, a.id AS attribute_id\n"
-                "FROM master_categories c\n"
-                "JOIN master_product_attributes a ON a.name IN (" + names_lit + ")\n"
-                "WHERE c.id = " + cat_id + ";"
-            )
-            verification_after = (
-                "SELECT COUNT(*) AS assigned FROM master_product_category_attribute_assign\n"
-                "WHERE category_id = "
-                + cat_id
-                + " AND attribute_id IN ("
-                + ids_lit
-                + ");"
-            )
-        else:
-            sql = "-- nothing to insert: all requested attributes are already assigned"
-            verification_before = "-- nothing to verify (no new rows)"
-            verification_after = "-- nothing to verify (no new rows)"
-
-    except MasterApiError as exc:
-        return _tool_error(exc)
-
-    return json.dumps(
-        {
-            "ok": True,
-            "category": cat.get("name"),
-            "category_id": cat.get("id"),
-            "to_add": [a["name"] for a in to_add],
-            "already_assigned": already,
-            "unknown_attributes": unknown,
-            "sql": sql,
-            "verification_before": verification_before,
-            "verification_after": verification_after,
-            "notes": "UUID() generates the 36-char id; NOT EXISTS keeps the insert idempotent.",
-        },
-        ensure_ascii=False,
-    )
-
-
-# Build SQL for creating a new product attribute. Returns a dict with SQL and verification queries.
-def _create_attribute_sql(
-    name,  # attribute name
-    label="",
-    description="",
-    multiple_selection=False,
-    dropdown_reference="",
-    catalog_default_display=False,
-) -> dict:
-    """Pure builder. Returns a dict, never a JSON string."""
-    name = (name or "").strip()
-    label = (label or "").strip() or name
-    if not sqlguard.ATTRIBUTE_NAME_RE.match(name):
-        return {
-            "ok": False,
-            "error": f"invalid attribute name {name!r} (must be snake_case)",
-        }
-
-    existing = master_api._rows("master_product_attributes")
-    if any(str(a.get("name", "")) == name for a in existing):
-        return {"ok": True, "already_exists": True, "name": name, "sql": ""}
-
-    lit = sqlguard._sql_literal
-    cols = ["id", "name", "label"]
-    vals = ["UUID()", lit(name), lit(label)]
-    if description:
-        cols.append("description")
-        vals.append(lit(description))
-    if dropdown_reference:
-        cols.append("dropdown_reference")
-        vals.append(lit(dropdown_reference))
-    cols += ["multiple_selection", "catalog_default_display"]
-    vals += [
-        "1" if multiple_selection else "0",
-        "1" if catalog_default_display else "0",
-    ]
-
-    sql = (
-        f"INSERT INTO master_product_attributes ({', '.join(cols)})\n"
-        f"SELECT {', '.join(vals)}\n"
-        f"WHERE NOT EXISTS (SELECT 1 FROM master_product_attributes WHERE name = {lit(name)});"
-    )
-    return {
-        "ok": True,
-        "name": name,
-        "sql": sql,
-        "verification_before": f"SELECT id, name FROM master_product_attributes WHERE name = {lit(name)};",
-        "verification_after": f"SELECT COUNT(*) AS created FROM master_product_attributes WHERE name = {lit(name)};",
-    }
-
-
-@tool
-def build_create_attribute_sql(
-    name: str,
-    label: str = "",
-    description: str = "",
-    multiple_selection: bool = False,
-    dropdown_reference: str = "",
-    catalog_default_display: bool = False,
-) -> str:
-    """Build an idempotent INSERT for ONE attribute whose name/label are already decided.
-    To decide the attributes for a category, use `suggest_category_attributes` first."""
-    try:
-        return json.dumps(
-            _create_attribute_sql(
-                name,
-                label,
-                description,
-                multiple_selection,
-                dropdown_reference,
-                catalog_default_display,
-            ),
-            ensure_ascii=False,
-        )
-    except MasterApiError as exc:
-        return _tool_error(exc)
-
-
-@tool
-def build_attribute_dropdown_sql(attribute: str, values: List[str]) -> str:
-    """Build idempotent MySQL INSERTs adding dropdown values to an attribute. Read-only: nothing is executed."""
-    try:
-        all_attrs = master_api._rows("master_product_attributes")
-        attr, candidates = master_api._resolve(all_attrs, "id", "name", attribute)
-        if attr is None:
-            return json.dumps(
-                {
-                    "ok": False,
-                    "error": f"attribute not found: {attribute!r}",
-                    "candidates": candidates,
-                },
-                ensure_ascii=False,
-            )
-
-        attr_id = str(attr.get("id"))
-        attr_name = attr.get("name")
-        statements = []
-        for raw in values or []:
-            value = str(raw).strip()
-            if not value:
-                continue
-            val_lit = sqlguard._sql_literal(value)
-            stmt = (
-                "INSERT INTO master_product_attribute_dropdown (id, attribute_id, value)\n"
-                f"SELECT UUID(), {sqlguard._sql_literal(attr_id)}, {val_lit}\n"
-                "WHERE NOT EXISTS (SELECT 1 FROM master_product_attribute_dropdown "
-                f"WHERE attribute_id = {sqlguard._sql_literal(attr_id)} AND value = {val_lit});"
-            )
-            statements.append({"value": value, "sql": stmt})
-
-        verification_before = (
-            "SELECT value FROM master_product_attribute_dropdown "
-            f"WHERE attribute_id = {sqlguard._sql_literal(attr_id)};"
-        )
-        return json.dumps(
-            {
-                "ok": True,
-                "attribute": attr_name,
-                "attribute_id": attr_id,
-                "statements": statements,
-                "verification_before": verification_before,
-            },
-            ensure_ascii=False,
-        )
-    except MasterApiError as exc:
-        return _tool_error(exc)
 
 
 @tool
@@ -774,17 +425,14 @@ PLAN_TOOLS = [
     list_master_tables,
     get_master_table_schema,
     fetch_master_rows,
-    fetch_category_tree,
-    fetch_attribute_catalog,
-    fetch_attribute_assignments,
     read_master_schema_file,
     read_table_definition,
-    build_category_attribute_assign_sql,
-    build_create_attribute_sql,
-    build_attribute_dropdown_sql,
     build_insert_sql,
     build_update_sql,
     execute_select_query,
     fetch_web_content,
     search_web,
 ]
+
+
+

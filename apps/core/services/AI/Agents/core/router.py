@@ -23,7 +23,7 @@ from typing import Any, Dict, List, Optional
 
 from apps.core import config
 
-from .engine import ProductPlan, assert_plan_sql
+from .engine import DomainPlan, assert_plan_sql
 from .llm import DEFAULT_MODEL, NUM_CTX, build_llm
 from .memory import ConversationMemory
 from .contracts import canonical_digest, extract_json_block
@@ -180,7 +180,7 @@ class GeneralManagerAgent(ConversationMemory):
         )
         self._managers: Dict[str, Any] = {}
         self.last_domain: str = pinned or "product"
-        self.last_plan: Optional[ProductPlan] = None
+        self.last_plan: Optional[DomainPlan] = None
 
     def reset(self) -> None:
         """Forget the conversation and the last plan (agents stay loaded)."""
@@ -293,7 +293,7 @@ class GeneralManagerAgent(ConversationMemory):
         sub = self._manager(domain)
         yield {"type": "status", "text": f"domain: {domain}"}
         yield {"type": "status", "text": f"history: {len(self.messages)} message(s)"}
-        plan: Optional[ProductPlan] = None
+        plan: Optional[DomainPlan] = None
         for event in sub.stream(task, history=self.history()):
             if event["type"] == "plan":
                 plan = event["plan"]
@@ -301,9 +301,9 @@ class GeneralManagerAgent(ConversationMemory):
         if plan is not None:
             self.record(task, plan)
 
-    def plan(self, task: str, domain: Optional[str] = None) -> ProductPlan:
+    def plan(self, task: str, domain: Optional[str] = None) -> DomainPlan:
         """Run one routed turn and return the guarded plan (no token streaming)."""
-        plan: Optional[ProductPlan] = None
+        plan: Optional[DomainPlan] = None
         for event in self.stream(task, domain=domain):
             if event["type"] == "plan":
                 plan = event["plan"]
@@ -312,7 +312,7 @@ class GeneralManagerAgent(ConversationMemory):
     # -- act ----------------------------------------------------------------
     def act(
         self,
-        plan: ProductPlan,
+        plan: DomainPlan,
         *,
         dry_run: bool = True,
         confirm: bool = False,

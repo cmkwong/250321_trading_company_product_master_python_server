@@ -1,1 +1,1 @@
-"""LangChain agent definitions: a manager agent plus specialist workers."""
+"""LangChain agent definitions: a manager agent plus specialist sub-agents."""

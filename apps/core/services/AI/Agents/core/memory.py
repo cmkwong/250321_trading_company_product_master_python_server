@@ -7,7 +7,8 @@ domain-agnostic, cheap to replay and safe to hand to a different domain manager.
 Compaction replaces the whole history with a single summarised pair.
 
 The small plan-shape coercion helpers (``as_str_list`` / ``as_sql_list`` /
-``as_dict_list``) live in ``..contracts`` alongside the plan/worker shapes, so
+``as_dict_list``) live in ``..contracts`` alongside the plan/sub-agent result
+shapes, so
 :mod:`core.engine` can import them without creating an import cycle back
 through this module.
 """
@@ -23,7 +24,7 @@ from .contracts import as_dict_list, as_sql_list, as_str_list
 from .llm import build_llm
 
 if TYPE_CHECKING:  # type annotations only; avoids an engine <-> memory cycle
-    from .engine import ProductPlan
+    from .engine import DomainPlan
 
 
 def _clip(text: Any, limit: int) -> str:
@@ -44,23 +45,29 @@ def _merged(*values: Any) -> List[str]:
     return out
 
 
-def render_turn(task: str, plan: "ProductPlan") -> str:
+def render_turn(task: str, plan: "DomainPlan") -> str:
     """Render a finished turn as a readable block for the next turn's history.
 
     Concatenates the human request with the plan's ``answer``, ``summary``,
     ``plan`` steps, ``sql``, ``missing_data`` and ``risks``, plus the
-    ``worker_results`` (per-worker status / summary / error / tables / queries),
+    ``agent_results`` (per sub-agent status / summary / error / tables / queries),
     ``drafts`` and ``skipped_sql`` the top-level fields normally omit.  The
-    top-level value wins; when it is empty the successful workers fill the gap
+    top-level value wins; when it is empty the successful sub-agents fill the gap
     (the ``_parse_result`` fallback path leaves ``answer``/``summary``/``plan``/
-    ``sql`` empty even though a worker fetched the rows).  Raw ``queries[].rows``
-    payloads are deliberately excluded to keep history cheap, and the whole block
-    is capped at ``AI_TURN_RENDER_MAX_CHARS``.  The human message and system
-    prompt still instruct the model to answer with a single JSON object, and
-    :meth:`core.engine.DomainManagerAgent._parse_result` falls back to the
-    fetched rows if the model drifts into prose.
+    ``sql`` empty even though a sub-agent fetched the rows).  Raw
+    ``queries[].rows`` payloads are deliberately excluded to keep history cheap,
+    and the whole block is capped at ``AI_TURN_RENDER_MAX_CHARS``.  The human
+    message and system prompt still instruct the model to answer with a single
+    JSON object, and :meth:`core.engine.DomainManagerAgent._parse_result` falls
+    back to the fetched rows if the model drifts into prose.
     """
-    workers = as_dict_list(plan.get("worker_results"))
+    # ``agent_results`` is current; ``worker_results`` is accepted for one release
+    # so plans cached before the rename still render into history.
+    workers = as_dict_list(
+        plan.get("agent_results")
+        if "agent_results" in plan
+        else plan.get("worker_results")
+    )
     ok_workers = [w for w in workers if w.get("ok") and not w.get("error")]
     task_text = str(task or "").strip()
     lines: List[str] = []
@@ -94,7 +101,7 @@ def render_turn(task: str, plan: "ProductPlan") -> str:
     if not steps:
         for w in ok_workers:
             for step in as_str_list(w.get("plan")):
-                steps.append(f"[{w.get('worker', '?')}] {step}")
+                steps.append(f"[{w.get('agent') or w.get('worker') or '?'}] {step}")
     if steps:
         lines.append("Plan:")
         lines.extend(f"  {i + 1}. {step}" for i, step in enumerate(steps))
@@ -106,7 +113,7 @@ def render_turn(task: str, plan: "ProductPlan") -> str:
                 if step.get("statement"):
                     sql_steps.append(
                         {
-                            "purpose": f"[{w.get('worker', '?')}] "
+                            "purpose": f"[{w.get('agent') or w.get('worker') or '?'}] "
                             + step.get("purpose", ""),
                             "statement": step.get("statement", ""),
                             "verification": step.get("verification", ""),
@@ -129,7 +136,7 @@ def render_turn(task: str, plan: "ProductPlan") -> str:
             statement = str(step.get("statement", "") or "").strip()
             if not statement:
                 continue
-            label = str(step.get("worker", "") or "").strip()
+            label = str(step.get("agent") or step.get("worker") or "").strip()
             purpose = _clip(step.get("purpose", ""), 300)
             if label:
                 lines.append(f"  - [{label}] {purpose}")
@@ -138,9 +145,9 @@ def render_turn(task: str, plan: "ProductPlan") -> str:
             lines.append("    " + _clip(statement, 600).replace("\n", "\n    "))
 
     if workers:
-        lines.append("Workers:")
+        lines.append("Sub-agents:")
         for w in workers:
-            name = str(w.get("worker", "") or "?").strip()
+            name = str(w.get("agent") or w.get("worker") or "?").strip()
             flags = ["FAILED"] if (not w.get("ok") or w.get("error")) else ["ok"]
             if w.get("executed"):
                 flags.append("executed")
@@ -233,7 +240,7 @@ class ConversationMemory:
         """Return a copy of the conversation to replay before the next turn."""
         return list(self.messages)
 
-    def record(self, task: str, plan: ProductPlan) -> None:
+    def record(self, task: str, plan: DomainPlan) -> None:
         """Append a finished turn to the history as ``(human, ai)`` pairs.
 
         The assistant turn is stored as the readable :func:`render_turn` block

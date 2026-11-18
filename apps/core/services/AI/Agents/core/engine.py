@@ -3,13 +3,13 @@
 This is the real home of the cross-domain turn engine that used to live inside
 ``manager_general``:
 
-- the plan schema (``SqlStep`` / ``ProductPlan``) and the ``/plan``-``/act`` SQL
+- the plan schema (``SqlStep`` / ``DomainPlan``) and the ``/plan``-``/act`` SQL
   guardrail wrappers (``assert_plan_sql`` / ``assert_plan_read_only``, which
   delegate to the single :mod:`core.guardrail` implementation);
 - the human-readable plan renderer (``format_plan``);
 - the turn engine (``DomainManagerAgent``): ``plan()`` / ``stream()``, message
-  building, result parsing and worker-result collection -- parameterised by each
-  domain's tools and prompts.
+  building, result parsing and sub-agent result collection -- parameterised by
+  each domain's tools and prompts.
 
 Domain managers live in ``domains.product`` and ``domains.sales`` and subclass
 ``DomainManagerAgent``.  The conversation memory lives in :mod:`core.memory`;
@@ -31,7 +31,7 @@ from .llm import DEFAULT_MODEL, NUM_CTX, build_llm
 from .memory import ConversationMemory, render_turn
 from .streaming import HEARTBEAT_SECONDS, stream_agent
 from .contracts import (
-    WorkerResult,
+    AgentResult,
     as_dict_list,
     as_sql_list,
     as_str_list,
@@ -45,21 +45,28 @@ class SqlStep(TypedDict, total=False):
     verification: str
 
 
-class ProductPlan(TypedDict, total=False):
+class DomainPlan(TypedDict, total=False):
     answer: str
     summary: str
     plan: List[str]
     sql: List[SqlStep]
     missing_data: List[str]
     risks: List[str]
-    worker_results: List[Dict[str, Any]]
+    agent_results: List[Dict[str, Any]]
     drafts: List[SqlStep]
 
 
-def _normalise_plan(plan: Any) -> ProductPlan:
-    """Coerce whatever the model returned into the ProductPlan shape."""
+def _normalise_plan(plan: Any) -> DomainPlan:
+    """Coerce whatever the model returned into the DomainPlan shape."""
     if not isinstance(plan, dict):
         plan = {}
+    # ``agent_results`` is the current key; ``worker_results`` is accepted for one
+    # release so plans cached before the rename still render / execute.
+    agent_results = (
+        plan.get("agent_results")
+        if "agent_results" in plan
+        else plan.get("worker_results")
+    )
     return {
         "answer": str(plan.get("answer", "")),
         "summary": str(plan.get("summary", "")),
@@ -67,7 +74,7 @@ def _normalise_plan(plan: Any) -> ProductPlan:
         "sql": as_sql_list(plan.get("sql")),
         "missing_data": as_str_list(plan.get("missing_data")),
         "risks": as_str_list(plan.get("risks")),
-        "worker_results": as_dict_list(plan.get("worker_results")),
+        "agent_results": as_dict_list(agent_results),
         "drafts": as_sql_list(plan.get("drafts")),
     }
 
@@ -99,7 +106,7 @@ def _rows_answer(row_count: int, rows: List[Dict[str, Any]]) -> str:
 
 
 def format_plan(
-    plan: ProductPlan,
+    plan: DomainPlan,
     executed: Optional[List[Dict[str, Any]]] = None,
 ) -> str:
     """Render a plan as human-readable text.
@@ -128,10 +135,13 @@ def format_plan(
     if plan.get("missing_data"):
         lines.append("\nMissing data:")
         lines.extend(f"  - {item}" for item in plan["missing_data"])
-    if plan.get("worker_results"):
-        for wr in plan["worker_results"]:
+    agent_results = (
+        plan.get("agent_results") or plan.get("worker_results") or []
+    )
+    if agent_results:
+        for wr in agent_results:
             status = "executed" if wr.get("executed") else "NOT executed"
-            lines.append(f"\n[{wr.get('worker', '?')}] {wr.get('summary', '')}")
+            lines.append(f"\n[{wr.get('agent', '?')}] {wr.get('summary', '')}")
             lines.append(f"  (status: {status})")
             if wr.get("answer"):
                 lines.append(f"  Answer: {wr['answer']}")
@@ -150,8 +160,8 @@ def format_plan(
     if plan.get("drafts"):
         lines.append("\nDrafts (not executed):")
         for step in plan["drafts"]:
-            if step.get("worker"):
-                lines.append(f"  -- [{step['worker']}] {step.get('purpose', '')}")
+            if step.get("agent"):
+                lines.append(f"  -- [{step['agent']}] {step.get('purpose', '')}")
             if step.get("statement"):
                 lines.append("  " + step["statement"].replace("\n", "\n  "))
             if step.get("verification"):
@@ -359,7 +369,7 @@ class DomainManagerAgent(ConversationMemory):
                     for part in content
                 )
             data = extract_json_block(str(content))
-            if not isinstance(data, dict) or "worker" in data:
+            if not isinstance(data, dict) or "agent" in data:
                 continue
             if (
                 data.get("ok")
@@ -370,9 +380,9 @@ class DomainManagerAgent(ConversationMemory):
                 row_count = int(data.get("rowCount", len(rows)))
         return row_count, rows
 
-    # Parse the agent result into a structured ProductPlan.
-    def _parse_result(self, result: Dict[str, Any]) -> ProductPlan:
-        """Normalise an agent result dict into a guarded ProductPlan."""
+    # Parse the agent result into a structured DomainPlan.
+    def _parse_result(self, result: Dict[str, Any]) -> DomainPlan:
+        """Normalise an agent result dict into a guarded DomainPlan."""
         structured = result.get("structured_response")
         if structured is None:
             # Fallback: parse the last AI message as JSON.
@@ -418,24 +428,24 @@ class DomainManagerAgent(ConversationMemory):
         else:
             plan = _normalise_plan(structured)
 
-        plan["worker_results"], plan["drafts"] = self._collect_worker_results(result)
-        for wr in plan["worker_results"]:
+        plan["agent_results"], plan["drafts"] = self._collect_agent_results(result)
+        for wr in plan["agent_results"]:
             if not wr.get("ok") and wr.get("error"):
                 plan["missing_data"].append(
-                    f"[{wr.get('worker', '?')}] {wr.get('error')}"
+                    f"[{wr.get('agent', '?')}] {wr.get('error')}"
                 )
         return assert_plan_sql(plan, mode=self.mode)
 
     @staticmethod
-    def _collect_worker_results(result: Dict[str, Any]):
-        """Aggregate worker tool envelopes from the agent message history.
+    def _collect_agent_results(result: Dict[str, Any]):
+        """Aggregate sub-agent tool envelopes from the agent message history.
 
-        Every tool message is parsed through the single ``WorkerResult`` contract,
-        so a worker that fails (or returns a bare error envelope without a
-        ``worker`` key) is never dropped silently: it lands in ``worker_results``
+        Every tool message is parsed through the single ``AgentResult`` contract,
+        so a sub-agent that fails (or returns a bare error envelope without an
+        ``agent`` key) is never dropped silently: it lands in ``agent_results``
         and, via ``_parse_result``, in ``missing_data``.
         """
-        worker_results: List[Dict[str, Any]] = []
+        agent_results: List[Dict[str, Any]] = []
         drafts: List[SqlStep] = []
         for message in result.get("messages", []):
             if getattr(message, "type", None) != "tool":
@@ -446,42 +456,42 @@ class DomainManagerAgent(ConversationMemory):
                     str(part) if isinstance(part, str) else str(part.get("text", ""))
                     for part in content
                 )
-            envelope = WorkerResult.from_tool_content(content)
+            envelope = AgentResult.from_tool_content(content)
             if envelope is None:
-                # A tool produced something that is neither a worker envelope nor
+                # A tool produced something that is neither an agent envelope nor
                 # a plain SELECT result. Surface it instead of dropping it.
                 data = extract_json_block(str(content))
                 if isinstance(data, dict) and (
                     data.get("error") or data.get("ok") is False
                 ):
-                    envelope = WorkerResult(
-                        worker=str(data.get("worker") or "unknown"),
+                    envelope = AgentResult(
+                        agent=str(data.get("agent") or data.get("worker") or "unknown"),
                         ok=False,
-                        error=str(data.get("error") or "worker returned no result"),
+                        error=str(data.get("error") or "agent returned no result"),
                         summary=str(data.get("summary", "")),
                     )
             if envelope is None:
                 continue
-            worker_results.append(envelope.to_dict())
+            agent_results.append(envelope.to_dict())
             for step in envelope.sql:
                 if _first_verb(getattr(step, "statement", "") or "") == "SELECT":
                     continue
                 drafts.append(
                     {
-                        "worker": envelope.worker,
+                        "agent": envelope.agent,
                         "purpose": getattr(step, "purpose", "") or "",
                         "statement": getattr(step, "statement", "") or "",
                         "verification": getattr(step, "verification", "") or "",
                     }
                 )
-        return worker_results, drafts
+        return agent_results, drafts
 
     @staticmethod
     def _turn_messages(result: Dict[str, Any], start: int) -> Dict[str, Any]:
         """Copy ``result`` with ``messages`` limited to the current turn.
 
         The graph replays the whole conversation, so dropping the ``start``
-        messages that were already there keeps ``_collect_worker_results`` from
+        messages that were already there keeps ``_collect_agent_results`` from
         re-collecting drafts produced by earlier turns.
         """
         turn = dict(result)
@@ -496,7 +506,7 @@ class DomainManagerAgent(ConversationMemory):
         images: Optional[List[str]] = None,
         context: Optional[Dict[str, Any]] = None,
         history: Optional[List[Any]] = None,
-    ) -> ProductPlan:
+    ) -> DomainPlan:
         """Run one agent turn and return a normalised, read-only-guarded plan.
 
         ``history`` (or, by default, the conversation kept in ``self.messages``)

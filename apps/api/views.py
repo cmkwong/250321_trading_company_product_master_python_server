@@ -23,10 +23,10 @@ from apps.core.services.AI.Agents.domains.product.manager import ProductMasterAg
 from apps.core.services.AI.Agents.core.contracts import canonical_digest
 from apps.core.services.AI.Agents.core import plan_store
 from apps.core.services.AI.Agents.core.act_tools import execute_plan
-from apps.core.services.AI.Agents.domains.product.workers.name import ProductNameWorker
-from apps.core.services.AI.Agents.domains.product.workers.web_research import WebResearchWorker
-from apps.core.services.AI.Agents.domains.product.workers.attributes import ProductAttributesWorker
-from apps.core.services.AI.Agents.domains.product.workers.sql_builder import ProductSqlBuilderWorker
+from apps.core.services.AI.Agents.domains.product.naming.manager import ProductNameAgent
+from apps.core.services.AI.Agents.domains.product.web_research.manager import WebResearchAgent
+from apps.core.services.AI.Agents.domains.product.attributes.manager import ProductAttributesAgent
+from apps.core.services.AI.Agents.domains.product.sql.manager import ProductSqlAgent
 
 
 def _json_body(request):
@@ -260,7 +260,7 @@ def product_name_worker(request):
     if not isinstance(images, list):
         images = [images]
 
-    result = ProductNameWorker().rename(
+    result = ProductNameAgent().rename(
         chinese_name=str(name),
         images=images,
         seo_keywords=body.get("seo_keywords"),
@@ -280,7 +280,7 @@ def web_research_worker(request):
     urls = body.get("urls") or []
     if not isinstance(urls, list):
         urls = [urls]
-    result = WebResearchWorker().research(
+    result = WebResearchAgent().research(
         urls=urls,
         target_fields=body.get("target_fields"),
         question=body.get("question"),
@@ -301,7 +301,7 @@ def product_attributes_worker(request):
     if want_stream:
 
         def events():
-            for event in ProductAttributesWorker().stream(str(task)):
+            for event in ProductAttributesAgent().stream(str(task)):
                 yield json.dumps(event, ensure_ascii=False) + "\n"
 
         response = StreamingHttpResponse(events(), content_type="application/x-ndjson")
@@ -309,7 +309,7 @@ def product_attributes_worker(request):
         return response
 
     try:
-        result = ProductAttributesWorker().plan(str(task))
+        result = ProductAttributesAgent().plan(str(task))
     except Exception as exc:  # noqa: BLE001 - surface the error to the caller
         return JsonResponse({"error": str(exc)}, status=500)
     return JsonResponse(result)
@@ -339,7 +339,7 @@ def product_sql_builder_worker(request):
     if want_stream:
 
         def events():
-            for event in ProductSqlBuilderWorker().stream(
+            for event in ProductSqlAgent().stream(
                 str(question), tables=tables, execute=execute
             ):
                 yield json.dumps(event, ensure_ascii=False) + "\n"
@@ -349,7 +349,7 @@ def product_sql_builder_worker(request):
         return response
 
     try:
-        result = ProductSqlBuilderWorker().plan(
+        result = ProductSqlAgent().plan(
             str(question), tables=tables, execute=execute
         )
     except Exception as exc:  # noqa: BLE001 - surface the error to the caller

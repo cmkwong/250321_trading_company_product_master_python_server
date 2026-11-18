@@ -1,67 +1,34 @@
-"""Worker that turns a product-master business question into executable SQL.
+"""Product SQL-builder sub-agent manager.
 
-Unlike the other workers (which are narrow specialists), this one is the
-"analyst": it knows every table / column / foreign key from the Node schema
-modules on disk, drafts ONE read-only SELECT with the local Ollama model, runs
-it through ``execute_select_query`` when every referenced table is in
-``AI_QUERY_TABLES``, and returns the real rows in an envelope the manager can
-quote verbatim.
-
-It is deliberately read-only: write SQL stays with ``manage_product_attributes``
-and the ``build_*_sql`` tools.
+Turns a product-master business question into ONE read-only SELECT, runs it
+(via ``execute_select_query``) when every referenced table is queryable, and
+returns the real rows.  Owns the ``build_product_sql`` ``@tool`` the product and
+sales managers delegate to.
 """
 
 from __future__ import annotations
 
-import json
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional
 
 from langchain_core.tools import tool
 
+from apps.core.services.AI.Agents.core import contracts
+from apps.core.services.AI.Agents.core import settings
+from apps.core.services.AI.Agents.core import sql
+from apps.core.services.AI.Agents.core.agent import ToolLoopAgent
 from apps.core.services.AI.Agents.core.graph import build_tool_graph
 from apps.core.services.AI.Agents.core.guardrail import assert_draft_sql
-from apps.core.services.AI.Agents.core.llm import DEFAULT_MODEL, build_llm
-from apps.core.services.AI.Agents.core.streaming import stream_agent
-from apps.core.services.AI.Agents.core import settings
-from apps.core.services.AI.Agents.core import contracts
-from apps.core.services.AI.Agents.core import schema_catalog, sql
+from apps.core.services.AI.Agents.core.llm import build_llm
 from apps.core.services.AI.Agents.core.plan_tools import execute_select_query
-from apps.core.services.AI.Agents.core.schemas import (
-    BuildSqlInput,
-    _bool_like,
-    _csv_to_list,
+from apps.core.services.AI.Agents.core.schemas import BuildSqlInput
+from apps.core.services.AI.Agents.core.streaming import stream_agent
+
+from apps.core.services.AI.Agents.domains.product.sql.prompts import _system_prompt
+from apps.core.services.AI.Agents.domains.product.sql.tools import (
+    SQL_BUILDER_TOOLS,
+    _normalise_execute,
+    _normalise_tables,
 )
-
-# Tables whose compact schema is injected into the prompt (the ones nearly every
-# product question joins through).  Everything else is one `describe_tables` call
-# away.
-CORE_TABLES = (
-    "master_categories",
-    "master_product_attributes",
-    "master_product_attribute_dropdown",
-    "master_product_category_attribute_assign",
-    "master_product_name_types",
-    "master_currencies",
-    "products",
-    "product_names",
-    "product_costs",
-    "product_sale_prices_by_qty",
-    "master_product_status",
-)
-
-MAX_DESCRIBE_TABLES = 12
-
-
-# ``tables`` / ``execute`` argument coercion now lives in Agents/schemas.py
-# (``_csv_to_list`` / ``_bool_like``), declared once on the tool's args_schema.
-# These thin aliases keep the internal ``plan()`` / ``stream()`` call sites and
-# the ``_e2e_check.py`` dev script working against the single implementation.
-def _normalise_tables(tables: Any) -> Optional[List[str]]:
-    return _csv_to_list(tables)
-
-
-def _normalise_execute(execute: Any) -> bool:
-    return _bool_like(execute)
 
 
 def _row_label(row: Any) -> str:
@@ -85,141 +52,25 @@ def _rows_answer(row_count: int, rows: List[Dict[str, Any]]) -> str:
     return f"{row_count} row(s): " + ", ".join(labels)
 
 
-@tool
-def describe_tables(tables: str) -> str:
-    """Describe one or more schema tables: columns, types, PK and foreign keys.
-
-    ``tables`` is a comma-separated list, e.g. "products,product_names,
-    master_categories". Reads the Node schema files on disk -- no HTTP call and
-    no data rows. Returns compact ``- table(col TYPE -> fk.table.fk)`` lines.
-    """
-    try:
-        names = [t.strip() for t in str(tables or "").split(",") if t.strip()]
-        names = names[:MAX_DESCRIBE_TABLES]
-        if not names:
-            return json.dumps(
-                {
-                    "ok": False,
-                    "error": "no tables given",
-                    "hint": "Pass a comma-separated list of table names.",
-                },
-                ensure_ascii=False,
-            )
-        known = schema_catalog.load_schema_catalog()
-        unknown = [n for n in names if n not in known]
-        text = schema_catalog.render_schema_catalog(names)
-        return json.dumps(
-            {
-                "ok": True,
-                "schema": text,
-                "unknown": unknown,
-                "hint": "Unknown names are not in the schema; correct the spelling.",
-            },
-            ensure_ascii=False,
-        )
-    except Exception as exc:  # noqa: BLE001
-        return contracts._tool_error(exc)
-
-
-SQL_BUILDER_TOOLS = [describe_tables, execute_select_query]
-
-
-SQL_BUILDER_SYSTEM_PROMPT = """
-You are a senior MySQL analyst for a trading company's product-master database. 
-Your job is to turn a business question into correct SQL query with joining different tables.
-
-## Executable tables (the only tables a SELECT may reference and run)
-{table_index}
-
-Other tables exist in the schema but cannot be executed here. If a question needs
-one, still write the SQL and say so in missing_data.
-
-## Core tables (columns already known)
-{core_schemas}
-
-## How to work
-1. Extract the entities, filters, grouping and expected output columns from the
-   question.
-2. Pick tables from the executable index. Call `describe_tables("t1,t2,...")`
-   ONCE for any table not described above; it returns columns and foreign keys.
-3. Write SQL queries:
-   - explicit columns with table aliases; never `SELECT *`;
-   - JOIN on the `-> table.field` references shown in the schema;
-   - "has no X" => LEFT JOIN + WHERE x.id IS NULL;
-   - counts => COUNT(*) / COUNT(x.id) with every non-aggregated column in
-     GROUP BY;
-   - "which / list" answers => ORDER BY the natural order; LIMIT 200 unless the
-     question asks for everything.
-4. Call `execute_select_query` with the exact SQL. This is MANDATORY: you must
-   call it and read its rows BEFORE writing `answer`; a reply without a tool
-   result is invalid. If it errors, read the hint, fix the SQL and retry ONCE.
-   If the retry also fails, put the failure in missing_data and do NOT claim any
-   rows.
-5. Put the REAL result in `answer`, in the user's language: state the count and
-   list the values. If zero rows, say "none". If you did NOT run
-   `execute_select_query`, leave `answer` empty. Never claim rows you did not
-   fetch.
-6. If a column is missing from the schema, put it in missing_data. Never invent a
-   column.
-
-## SQL rules
-- MySQL 8, uppercase keywords, ONE statement, no SQL comments (the guard rejects
-  `--`, `#`, `/* */`).
-- Single-quote literals; escape inner quotes as ''.
-- Read-only: never draft INSERT/UPDATE/DELETE/DDL.
-- Do not use the read-guard's blocked words even as aliases: insert, update,
-  delete, replace, drop, alter, create, truncate, rename, grant, revoke, call,
-  execute, prepare, deallocate, set, use, lock, unlock, handler, load, outfile,
-  dumpfile, into, sleep, benchmark, get_lock, release_lock.
-
-## Output contract ??exactly ONE JSON object (no prose, no fences)
-- answer: the direct reply (count + values, or "none"), in the user's language.
-- summary: one short sentence describing the query.
-- sql: list of {{purpose, statement, verification}} (usually one SELECT).
-- tables_used: list of table names referenced.
-- plan: ordered steps you performed.
-- missing_data: unresolved columns/tables or failures.
-- risks: assumptions or warnings.
-"""
-
-
-def _system_prompt() -> str:
-    allow = settings.QUERY_ALLOWED_TABLES
-    return SQL_BUILDER_SYSTEM_PROMPT.format(
-        table_index="\n".join(f"- {t}" for t in allow),
-        core_schemas=schema_catalog.render_schema_catalog(CORE_TABLES),
-    )
-
-
 def _tables_in_sql(statement: str) -> List[str]:
     masked = sql._mask_quoted(statement or "")
     return sorted(set(sql._TABLE_RE.findall(masked)))
 
 
-class ProductSqlBuilderWorker:
-    """Tool-calling agent (``model`` -> ``tools`` -> ``model``) that builds and
-    (optionally) runs a read-only SELECT, via :func:`core.graph.build_tool_graph`."""
+class ProductSqlAgent(ToolLoopAgent):
+    """Tool-calling sub-agent (``model -> tools -> model``) that builds and
+    (optionally) runs a read-only SELECT."""
 
-    def __init__(
-        self,
-        model: Optional[str] = None,
-        temperature: float = 0.0,
-        recursion_limit: int = 12,
-        llm: Any = None,
-    ) -> None:
-        self.model = model or DEFAULT_MODEL
-        self.temperature = temperature
-        self.recursion_limit = recursion_limit
-        self.llm = llm or build_llm(
-            self.model, temperature=temperature, num_ctx=settings.SQL_BUILDER_NUM_CTX
+    DEFAULT_RECURSION_LIMIT = 12
+
+    def _build_llm(self):
+        return build_llm(
+            self.model, temperature=self.temperature, num_ctx=settings.SQL_BUILDER_NUM_CTX
         )
-        self._agent = None
 
     def _get_agent(self):
         if self._agent is None:
-            self._agent = build_tool_graph(
-                self.llm, SQL_BUILDER_TOOLS, _system_prompt()
-            )
+            self._agent = build_tool_graph(self.llm, SQL_BUILDER_TOOLS, _system_prompt())
         return self._agent
 
     def _build_human_message(
@@ -359,7 +210,7 @@ class ProductSqlBuilderWorker:
 
         if structured is None:
             return {
-                "worker": "product_sql_builder",
+                "agent": "product_sql_builder",
                 "ok": False,
                 "error": "model did not return a JSON object",
                 "raw": (text or "")[:500],
@@ -400,7 +251,7 @@ class ProductSqlBuilderWorker:
 
         norm["queries"] = self._collect_queries(result)
         norm["executed"] = bool(norm["queries"])
-        norm["worker"] = "product_sql_builder"
+        norm["agent"] = "product_sql_builder"
         norm["ok"] = True
         norm["execute_requested"] = execute
         return norm
@@ -423,14 +274,8 @@ class ProductSqlBuilderWorker:
         execute: bool = True,
     ) -> Dict[str, Any]:
         tables = _normalise_tables(tables)
-        agent = self._get_agent()
-        result = agent.invoke(
-            {
-                "messages": [
-                    ("human", self._build_human_message(question, tables, execute))
-                ]
-            },
-            config={"recursion_limit": self.recursion_limit},
+        result = self._invoke(
+            [("human", self._build_human_message(question, tables, execute))]
         )
         return self._ensure_executed(self._parse_result(result, execute=execute))
 
@@ -485,9 +330,11 @@ def build_product_sql(
     comma-separated string (e.g. "master_categories,products").
     """
     try:
-        result = ProductSqlBuilderWorker().plan(
+        result = ProductSqlAgent().plan(
             question, tables=_normalise_tables(tables), execute=execute
         )
     except Exception as exc:  # noqa: BLE001
-        result = {"worker": "product_sql_builder", "ok": False, "error": str(exc)}
-    return contracts.dump_worker_result(result)
+        result = {"agent": "product_sql_builder", "ok": False, "error": str(exc)}
+    return contracts.dump_agent_result(result)
+
+

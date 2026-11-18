@@ -1,76 +1,35 @@
-"""Worker that reads a web page and summarises it against target fields."""
+"""Product web-research sub-agent manager.
+
+Summarises web pages into target fields using a local model, and exposes the
+``research_product_web`` ``@tool`` the product manager delegates to.
+"""
 
 from __future__ import annotations
 
-import ipaddress
-import socket
 from typing import Any, Dict, List, Optional
-from urllib.parse import urlparse
 
-import requests
-from bs4 import BeautifulSoup
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_core.tools import tool
 
-from apps.core import config
+from apps.core.services.AI.Agents.core.agent import ToolLoopAgent
 from apps.core.services.AI.Agents.core.contracts import (
     as_str_list,
-    dump_worker_result,
+    dump_agent_result,
     extract_json_block,
 )
-from apps.core.services.AI.Agents.core.llm import DEFAULT_MODEL, build_llm, message_text
+from apps.core.services.AI.Agents.core.llm import message_text
 
-MAX_CHARS = int(config.get("AI_WEB_FETCH_MAX_CHARS", "8000"))
-MAX_URLS = int(config.get("AI_WEB_MAX_URLS", "3"))
-TIMEOUT = float(config.get("MASTER_API_TIMEOUT", "20"))
-SHORT_PAGE_CHARS = 200
-
-WEB_SYSTEM_PROMPT = "Answer using only the provided web page content."
+from apps.core.services.AI.Agents.domains.product.web_research.prompts import (
+    WEB_SYSTEM_PROMPT,
+)
+from apps.core.services.AI.Agents.domains.product.web_research import tools as web_tools
 
 
-def _validate_url(url: str) -> str:
-    parsed = urlparse(url)
-    if parsed.scheme not in ("http", "https"):
-        raise ValueError(f"unsupported URL scheme: {url!r}")
-    host = parsed.hostname
-    if not host:
-        raise ValueError(f"URL has no host: {url!r}")
-    allow_private = str(config.get("AI_WEB_ALLOW_PRIVATE_HOSTS", "0")).lower() in (
-        "1",
-        "true",
-        "yes",
-    )
-    if not allow_private:
-        try:
-            ip = ipaddress.ip_address(host)
-        except ValueError:
-            ip = ipaddress.ip_address(socket.gethostbyname(host))
-        if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved:
-            raise ValueError(f"blocked private/loopback host: {host}")
-    return url
-
-
-def fetch_text(url: str, max_chars: Optional[int] = None) -> str:
-    """Fetch a page and return clean, whitespace-collapsed text."""
-    max_chars = max_chars or MAX_CHARS
-    _validate_url(url)
-    session = requests.Session()
-    session.trust_env = False
-    resp = session.get(url, timeout=TIMEOUT, headers={"User-Agent": "Mozilla/5.0"})
-    resp.raise_for_status()
-    soup = BeautifulSoup(resp.text, "html.parser")
-    for tag in soup(["script", "style", "nav", "footer", "header"]):
-        tag.decompose()
-    text = " ".join(soup.get_text(separator=" ").split())
-    return text[:max_chars]
-
-
-class WebResearchWorker:
+class WebResearchAgent(ToolLoopAgent):
     """Summarise web pages into target fields using a local model."""
 
-    def __init__(self, model: Optional[str] = None, llm: Any = None):
-        self.model = model or DEFAULT_MODEL
-        self.llm = llm or build_llm(self.model)
+    TOOLS = ()
+    SYSTEM_PROMPT = WEB_SYSTEM_PROMPT
 
     def research(
         self,
@@ -78,19 +37,19 @@ class WebResearchWorker:
         target_fields: Optional[List[str]] = None,
         question: Optional[str] = None,
     ) -> Dict[str, Any]:
-        urls = [u for u in (urls or []) if str(u).strip()][:MAX_URLS]
+        urls = [u for u in (urls or []) if str(u).strip()][: web_tools.MAX_URLS]
         target_fields = [f for f in (target_fields or []) if str(f).strip()]
         if not urls:
-            return {"worker": "web_research", "ok": False, "error": "no URLs provided"}
+            return {"agent": "web_research", "ok": False, "error": "no URLs provided"}
 
         sources: List[Dict[str, Any]] = []
         pages: List[str] = []
         risks: List[str] = []
         for url in urls:
             try:
-                text = fetch_text(str(url))
+                text = web_tools.fetch_text(str(url))
                 sources.append({"url": url, "chars": len(text), "error": None})
-                if len(text.strip()) < SHORT_PAGE_CHARS:
+                if len(text.strip()) < web_tools.SHORT_PAGE_CHARS:
                     risks.append(
                         f"page returned little text ({len(text)} chars), may be JS-rendered: {url}"
                     )
@@ -102,14 +61,14 @@ class WebResearchWorker:
 
         if not pages:
             return {
-                "worker": "web_research",
+                "agent": "web_research",
                 "ok": False,
                 "error": "could not fetch any page",
                 "sources": sources,
                 "risks": risks,
             }
 
-        combined = "\n\n".join(pages)[:MAX_CHARS]
+        combined = "\n\n".join(pages)[: web_tools.MAX_CHARS]
         if question:
             user = f"Page content:\n{combined}\n\nQuestion: {question}\n"
         else:
@@ -141,7 +100,7 @@ class WebResearchWorker:
             )
         except Exception as exc:  # noqa: BLE001
             return {
-                "worker": "web_research",
+                "agent": "web_research",
                 "ok": False,
                 "error": str(exc),
                 "sources": sources,
@@ -157,7 +116,7 @@ class WebResearchWorker:
                 missing.append(f)
 
         return {
-            "worker": "web_research",
+            "agent": "web_research",
             "ok": True,
             "summary": str(data.get("summary", "")),
             "fields": fields,
@@ -176,9 +135,9 @@ def research_product_web(
 ) -> str:
     """Fetch one or more web pages and summarise them into the requested target fields. Returns a JSON envelope (never fabricates fields not present on the page)."""
     try:
-        result = WebResearchWorker().research(
+        result = WebResearchAgent().research(
             urls=urls, target_fields=target_fields, question=question
         )
     except Exception as exc:  # noqa: BLE001
-        result = {"worker": "web_research", "ok": False, "error": str(exc)}
-    return dump_worker_result(result)
+        result = {"agent": "web_research", "ok": False, "error": str(exc)}
+    return dump_agent_result(result)
